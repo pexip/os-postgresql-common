@@ -1,6 +1,7 @@
 postgresql-common (225pexip1) pexip; urgency=medium
 
   * Prepare Pexip packaging
+  * Add Pexos support to debian/supported-versions.
 
  -- Mark Hymers <mark.hymers@pexip.com>  Mon, 26 Apr 2021 15:24:57 +0000
 

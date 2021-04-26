@@ -61,6 +61,9 @@ default() {
         [dD]ebian)
             debian "$RELEASE"
             ;;
+        [pP][eE][xX][oO][sS])
+            pexos "$RELEASE"
+            ;;
         *)
             echo "supported-versions: WARNING! Unknown distribution: $DISTRO" >&2
             if  echo $ID_LIKE | egrep  '(^| )ubuntu($| )' > /dev/null; then
@@ -74,6 +77,12 @@ default() {
                 /bin/echo -e "$DEFAULT"
             fi
             ;;
+    esac
+}
+
+pexos() {
+    case "$1" in
+        *) /bin/echo -e "13" ;;
     esac
 }
 
