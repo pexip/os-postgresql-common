@@ -1,3 +1,9 @@
+postgresql-common (225pexip1) pexip; urgency=medium
+
+  * Prepare Pexip packaging
+
+ -- Mark Hymers <mark.hymers@pexip.com>  Mon, 26 Apr 2021 15:24:57 +0000
+
 postgresql-common (225) unstable; urgency=medium
 
   * pg_lsclusters, cluster_info: Show cluster managed by pacemaker or patroni.

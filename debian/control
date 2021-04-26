@@ -1,8 +1,9 @@
 Source: postgresql-common
 Section: database
 Priority: optional
-Maintainer: Debian PostgreSQL Maintainers <team+postgresql@tracker.debian.org>
-Uploaders:
+Maintainer: Pexip AS <packaging@pexip.com>
+XSBC-Pexip-Original-Maintainer: Debian PostgreSQL Maintainers <team+postgresql@tracker.debian.org>
+XSBC-Pexip-Original-Uploaders:
  Martin Pitt <mpitt@debian.org>,
  Christoph Berg <myon@debian.org>,
  Peter Eisentraut <petere@debian.org>,
@@ -14,6 +15,7 @@ Build-Depends:
  debhelper (>= 9),
  debhelper (>= 10.1) | dh-systemd (>= 1.19),
  libreadline-dev,
+XS-Pexip-Upstream: http://ftp.debian.org/debian/ bullseye
 
 Package: postgresql-common
 Architecture: all
