@@ -156,7 +156,7 @@ chdir '/tmp/pgtest';
 # Upgrade to latest version
 my $outref;
 is ((exec_as 0, "(env LC_MESSAGES=C pg_upgradecluster -v $MAJORS[-1] $upgrade_options $MAJORS[0] upgr | sed -e 's/^/STDOUT: /')", $outref, 0), 0, 'pg_upgradecluster succeeds');
-like $$outref, qr/Starting target cluster/, 'pg_upgradecluster reported cluster startup';
+like $$outref, qr/Starting upgraded cluster/, 'pg_upgradecluster reported cluster startup';
 like $$outref, qr/Success. Please check/, 'pg_upgradecluster reported successful operation';
 my @err = grep (!/^STDOUT: /, split (/\n/, $$outref));
 if (@err) {
@@ -191,7 +191,7 @@ is_program_out 'nobody', 'psql -Atc "SELECT nextval(\'odd10\')" test', 0, "1\n",
     'check next sequence value (wrap)';
 
 # check large objects
-is_program_out 'postgres', 'psql -Atc "SET bytea_output = \'escape\'; SELECT data FROM pg_largeobject WHERE loid = 1234"', 0, "Hello world\n",
+is_program_out 'postgres', 'psql -Aqtc "SET bytea_output = \'escape\'; SELECT data FROM pg_largeobject WHERE loid = 1234"', 0, "Hello world\n",
     'check large object';
 
 # check stored procedures

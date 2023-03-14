@@ -90,10 +90,13 @@ EOF
     fi
 
     # Add postgres user to the ssl-cert group on fresh installs
+    # if not already in the group
     if [ -z "$2" ]; then
-	if getent group ssl-cert >/dev/null; then
-	    adduser $quiet postgres ssl-cert
-	fi
+        if getent group ssl-cert >/dev/null; then
+            if ! id -Gn postgres 2> /dev/null | grep -qw ssl-cert; then
+                adduser $quiet postgres ssl-cert
+            fi
+        fi
     fi
 
     if [ "$2" ]; then
@@ -112,6 +115,9 @@ EOF
         ucfr --purge postgresql-common $LRCONFIG
     fi
 
+    # Drop auto-generated conffile dropped in 215/229 + backups
+    rm -f /etc/apt/apt.conf.d/01autoremove-postgresql*
+
     # Create tsearch dictionaries on first install
     if [ -z "$2" ]; then
         pg_updatedicts
@@ -119,6 +125,14 @@ EOF
 
     # Reload systemd (we don't restart services on install) (#932360, #950726)
     [ -d /run/systemd/system ] && systemctl --system daemon-reload >/dev/null || :
+
+    # Provide keyring symlink for pgdg systems using the old pgdg.list format
+    pgdg_list="/etc/apt/sources.list.d/pgdg.list"
+    trusted_key="/etc/apt/trusted.gpg.d/apt.postgresql.org.gpg"
+    pgdg_key="/usr/share/postgresql-common/pgdg/apt.postgresql.org.gpg"
+    if test -e $pgdg_list && ! test -e $trusted_key && ! grep -q signed-by $pgdg_list; then
+        ln -sv $pgdg_key $trusted_key
+    fi
 fi
 
 if [ "$1" = triggered ]; then
