@@ -15,7 +15,7 @@ Build-Depends:
  debhelper (>= 9),
  debhelper (>= 10.1) | dh-systemd (>= 1.19),
  libreadline-dev,
-XS-Pexip-Upstream: http://ftp.debian.org/debian/ bullseye
+XS-Pexip-Upstream: http://ftp.debian.org/debian/ bookworm
 
 Package: postgresql-common
 Architecture: all
