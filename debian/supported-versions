@@ -55,7 +55,7 @@ default() {
             debian
             ;;
         [pP][eE][xX][oO][sS])
-            pexos "$RELEASE"
+            pexos
             ;;
         *)
             echo "supported-versions: WARNING! Unknown distribution ID in /etc/os-release: $ID" >&2
