@@ -9,6 +9,7 @@ License:        GPLv2+
 URL:            https://packages.debian.org/sid/%{name}
 Source0:        http://ftp.debian.org/debian/pool/main/p/%{name}/%{name}_%{version}.tar.xz
 Requires:       postgresql-client-common
+Requires:       perl-JSON
 
 %description
 The postgresql-common package provides a structure under which
@@ -41,6 +42,7 @@ for inst in debian/*.install; do
     [ "$pkg" = "postgresql-server-dev-all" ] && continue
     echo "### Reading $pkg files list from $inst ###"
     while read file dir; do
+        [ "$file" = "supported_versions" ] && continue # only relevant on Debian
         mkdir -p %{buildroot}/$dir
         cp -r $file %{buildroot}/$dir
         echo "/$dir/${file##*/}" >> files-$pkg
@@ -62,17 +64,20 @@ for manpages in debian/*.manpages; do
     done < $manpages
 done
 # install pg_wrapper symlinks by augmenting the existing pgdg.rpm alternatives
+cat debian/postgresql-*common.links | \
 while read dest link; do
     name="pgsql-$(basename $link)"
     echo "update-alternatives --install /$link $name /$dest 9999" >> postgresql-client-common.post
     echo "update-alternatives --remove $name /$dest" >> postgresql-client-common.preun
-done < debian/postgresql-client-common.links
+done
 # activate rpm-specific tweaks
 sed -i -e 's/#redhat# //' \
+    %{buildroot}/lib/systemd/system-generators/postgresql-generator \
     %{buildroot}/usr/bin/pg_config \
     %{buildroot}/usr/bin/pg_virtualenv \
     %{buildroot}/usr/share/perl5/PgCommon.pm \
-    %{buildroot}/usr/share/postgresql-common/init.d-functions
+    %{buildroot}/usr/share/postgresql-common/init.d-functions \
+    %{buildroot}/usr/share/postgresql-common/pg_getwal
 # install init script
 mkdir -p %{buildroot}/etc/init.d %{buildroot}/etc/logrotate.d
 cp debian/postgresql-common.postgresql.init %{buildroot}/etc/init.d/postgresql
@@ -82,14 +87,6 @@ cp rpm/init-functions-compat %{buildroot}/usr/share/postgresql-common
 sed -e 's/__SSL__/off/' createcluster.conf > %{buildroot}/etc/postgresql-common/createcluster.conf
 cp debian/postgresql-common.logrotate %{buildroot}/etc/logrotate.d/postgresql-common
 
-%if 0%{?rhel} >= 7
-# Prepare systemd unit files, but only for RHEL/CentOS 7 and above...
-pushd systemd
-DESTDIR=%{buildroot} gmake install
-sed -i -e 's/#redhat# //' %{buildroot}/lib/systemd/system-generators/postgresql-generator
-popd
-%endif
-
 %files -n postgresql-common -f files-postgresql-common
 %attr(0755, root, root) %config /etc/init.d/postgresql
 #%attr(0755, root, root) /usr/share/postgresql-common/postgresql-common.postinst
@@ -98,8 +95,8 @@ popd
 %config /etc/logrotate.d/postgresql-common
 
 %if 0%{?rhel} >= 7
-%config /lib/systemd/system/postgresql.service
-%config /lib/systemd/system/postgresql@.service
+%config /lib/systemd/system/*.service
+%config /lib/systemd/system/*.timer
 %config /lib/systemd/system-generators/postgresql-generator
 %endif
 

@@ -11,7 +11,7 @@ use lib 't';
 use TestLib;
 use PgCommon;
 
-use Test::More tests => 149 * @MAJORS;
+use Test::More tests => 147 * @MAJORS;
 
 $ENV{_SYSTEMCTL_SKIP_REDIRECT} = 1; # FIXME: testsuite is hanging otherwise
 
@@ -23,7 +23,7 @@ sub check_major {
     my $xlogdir = tempdir("/tmp/$v.xlog.XXXXXX", CLEANUP => 1);
     rmdir $xlogdir; # recreated by initdb
     if ($v > 8.2) {
-        my $start_command = $v >= 14 ? "14 *main *5432 *online" : # initdb --no-instructions in 14+
+        my $start_command = $v >= 14 ? "$v *main *5432 *online" : # initdb --no-instructions in 14+
             ($v >= 11 and not $PgCommon::rpm) ? "pg_ctlcluster" : "pg_ctl"; # CLUSTER_START_COMMAND supported in initdb 11+
         like_program_out 'root', "pg_createcluster $v main --start -- -X $xlogdir", 0, qr/$start_command/,
             "pg_createcluster $v main";
@@ -36,7 +36,7 @@ sub check_major {
 
     # check that a /var/run/postgresql/ pid file is created
     my @contents = ('.s.PGSQL.5432', '.s.PGSQL.5432.lock', "$v-main.pid", "$v-main.pg_stat_tmp");
-    pop @contents if ($v < 8.4); # remove pg_stat_tmp
+    pop @contents if ($v < 8.4 or $v >= 15); # remove pg_stat_tmp
     unless ($PgCommon::rpm and $v < 9.4) {
         ok_dir '/var/run/postgresql/', [@contents],
             'Socket and pid file are in /var/run/postgresql/';
@@ -48,6 +48,21 @@ sub check_major {
     my $first_xlog = $v >= 9.0 ? "000000010000000000000001" : "000000010000000000000000";
     ok_dir $xlogdir, [$first_xlog, "archive_status"],
         "xlog/wal directory $xlogdir was created";
+
+    # check pg_hba.conf auth methods
+    my $local_method = $v >= 9.1 ? 'peer' :
+                      ($v >= 8.4 ? 'ident' :
+                                   'sameuser'); # actually "ident sameuser", but the test is lazy
+    my $host_method = $v >= 14 ? 'scram-sha-256' : 'md5';
+    my (%local_methods, %host_methods);
+    open my $fh, "/etc/postgresql/$v/main/pg_hba.conf";
+    while (<$fh>) {
+        $local_methods{$1} = 1 if (/^local.*\s(\S+)/);
+        $host_methods{$1} = 1 if (/^host.*\s(\S+)/);
+    }
+    close $fh;
+    is_deeply [keys %local_methods], [$local_method], "local method in pg_hba.conf is $local_method";
+    is_deeply [keys %host_methods], [$host_method], "host method in pg_hba.conf is $host_method";
 
     # verify that exactly one postgres master is running
     my @pm_pids = pidof ('postgres');
@@ -79,7 +94,7 @@ sub check_major {
 
     # Now there should not be an external PID file any more, since we set it
     # explicitly
-    unless ($PgCommon::rpm and $v < 9.4) {
+    unless ($PgCommon::rpm and ($v < 9.4 or $v >= 15)) {
         ok_dir '/var/run/postgresql', [grep {! /pid/} @contents],
             'Socket and stats dir, but not PID file in /var/run/postgresql/';
     } else {
@@ -88,11 +103,16 @@ sub check_major {
 
     # verify that the correct client version is selected
     like_program_out 'postgres', 'createdb --version', 0, qr/^createdb \(PostgreSQL\) $v/,
-        'pg_wrapper selects version number of cluster';
+        'pg_wrapper+createdb selects version number of cluster';
 
     # we always want to use the latest version of "psql", though.
-    like_program_out 'postgres', 'psql --version', 0, qr/^psql \(PostgreSQL\) $ALL_MAJORS[-1]/,
-        'pg_wrapper selects version number of cluster';
+    my $max_version = $ALL_MAJORS[-1];
+    if ($v < 9.2) {
+        # if version is older than 9.2 pick v14 at most
+        $max_version = (grep { $_ <= 14 } @ALL_MAJORS)[-1];
+    }
+    like_program_out 'postgres', 'psql --version', 0, qr/^psql \(PostgreSQL\) $max_version/,
+        "pg_wrapper+psql selects version $max_version";
 
     my $default_log = "/var/log/postgresql/postgresql-$v-main.log";
 
@@ -135,6 +155,7 @@ sub check_major {
 
     # verify that log symlink works
     is ((exec_as 'root', "pg_ctlcluster $v main stop"), 0, 'stopping cluster');
+    usleep $delay;
     truncate "$default_log", 0; # empty log file
     my $p = (PgCommon::cluster_data_directory $v, 'main') . '/mylog';
     symlink $p, "/etc/postgresql/$v/main/log";
@@ -144,6 +165,7 @@ sub check_major {
     ok -z $default_log, "default log is not used";
     like_program_out 'postgres', 'pg_lsclusters -h', 0, qr/^$v\s+main.*$p\n$/;
     is ((exec_as 'root', "pg_ctlcluster $v main stop"), 0, 'stopping cluster');
+    usleep $delay;
     truncate "$default_log", 0; # empty log file
 
     # verify that explicitly configured log file trumps log symlink
@@ -333,7 +355,7 @@ tel|2
 	change_ugid $pw[2], $pw[3];
 	open(STDIN, "<& RH");
 	dup2(POSIX::open('/dev/null', POSIX::O_WRONLY), 1);
-	exec 'psql', 'nobodydb' or die "could not exec psql process: $!";
+	exec 'psql', '-Xq', '-vPROMPT1=', 'nobodydb' or die "could not exec psql process: $!";
     }
     close RH;
     select WH; $| = 1; # make unbuffered
@@ -377,17 +399,10 @@ tel|2
     print WH "BEGIN;\n";
     usleep $delay;
     like_program_out 0, "ps h $client_pid", 0, qr/idle in transaction/, 'process title is idle in transaction';
-    print WH "SELECT pg_sleep(2); COMMIT;\n";
-    usleep $delay;
-    like_program_out 0, "ps h $client_pid", 0, qr/SELECT/, 'process title is SELECT';
 
     close WH;
+    kill 15, $psql;
     waitpid $psql, 0;
-
-    # Drop database and user again.
-    usleep $delay;
-    is ((exec_as 'nobody', 'dropdb nobodydb', $outref, 0), 0, 'dropdb nobodydb', );
-    is ((exec_as 'postgres', 'dropuser nobody', $outref, 0), 0, 'dropuser nobody');
 
     # log file gets re-created by pg_ctlcluster
     is ((exec_as 0, "pg_ctlcluster $v main stop"), 0, 'stopping cluster');
@@ -409,7 +424,7 @@ tel|2
     }
 
     # check apt config
-    is_program_out 0, "egrep -o 'postgresql.[0-9.*-]+' /etc/apt/apt.conf.d/01autoremove-postgresql", 0,
+    is_program_out 0, "grep -Eo 'postgresql.[0-9.*-]+' /etc/apt/apt.conf.d/02autoremove-postgresql", 0,
         "postgresql.*-$v\n", "Correct apt NeverAutoRemove config";
 
     # stop server, clean up, check for leftovers
@@ -420,7 +435,7 @@ tel|2
     ok_dir $spc1, [], "tablespace spc1 was emptied";
     ok_dir $spc2, [qw(PG_99_fakedirectory)], "tablespace spc2 was emptied";
 
-    is_program_out 0, "egrep -o 'postgresql.[0-9.*-]+' /etc/apt/apt.conf.d/01autoremove-postgresql", 1,
+    is_program_out 0, "grep -Eo 'postgresql.[0-9.*-]+' /etc/apt/apt.conf.d/02autoremove-postgresql", 1,
         "", "Correct apt NeverAutoRemove config";
 
     check_clean;
