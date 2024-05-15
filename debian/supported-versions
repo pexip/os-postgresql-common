@@ -74,9 +74,7 @@ default() {
 }
 
 pexos() {
-    case "$1" in
-        *) /bin/echo -e "13" ;;
-    esac
+    echo "$DEFAULT"
 }
 
 ubuntu() {
