@@ -1,3 +1,9 @@
+postgresql-common (248+pexip24u4) pexip; urgency=medium
+
+  * Don't fail deleting things that don't exist
+
+ -- Huw Jones <huw@pexip.com>  Thu, 16 May 2024 17:07:46 +0100
+
 postgresql-common (248+pexip24u3) pexip; urgency=medium
 
   * disable unneeded server compile options:
