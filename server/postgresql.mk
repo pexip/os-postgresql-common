@@ -29,9 +29,9 @@ CATVERSION = $(shell awk '/CATALOG_VERSION_NO/ { print $$3 }' src/include/catalo
 # configure flags
 
 CONFIGURE_FLAGS = \
-  --with-tcl \
-  --with-perl \
-  --with-python \
+  --without-tcl \
+  --without-perl \
+  --without-python \
   --with-pam \
   --with-openssl \
   --with-libxml \
@@ -53,8 +53,8 @@ CONFIGURE_FLAGS = \
   --disable-rpath \
   --with-uuid=e2fs \
   --with-gnu-ld \
-  --with-gssapi \
-  --with-ldap \
+  --without-gssapi \
+  --without-ldap \
   --with-pgport=5432 \
   --with-system-tzdata=/usr/share/zoneinfo \
   AWK=mawk \

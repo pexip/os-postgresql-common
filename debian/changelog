@@ -1,3 +1,11 @@
+postgresql-common (248+pexip24u3) pexip; urgency=medium
+
+  * disable unneeded server compile options:
+    - remove PL TCL/Perl/Python support
+    - remove GSSAPI/LDAP support
+
+ -- Huw Jones <huw@pexip.com>  Thu, 16 May 2024 16:27:46 +0100
+
 postgresql-common (248+pexip24u2) pexip; urgency=medium
 
   * Fix supported-versions
