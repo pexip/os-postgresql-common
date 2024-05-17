@@ -1,3 +1,9 @@
+postgresql-common (248+pexip24u5) pexip; urgency=medium
+
+  * common/postinst: use install instead of su
+
+ -- Huw Jones <huw@pexip.com>  Fri, 17 May 2024 13:12:26 +0100
+
 postgresql-common (248+pexip24u4) pexip; urgency=medium
 
   * Don't fail deleting things that don't exist

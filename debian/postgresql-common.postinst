@@ -55,10 +55,7 @@ Please fix this and reinstall this package." >&2
     fi
 
     # ensure home directory ownership
-    mkdir -p /var/lib/postgresql
-    su -s /bin/sh postgres -c "test -O /var/lib/postgresql &&
-            test -G /var/lib/postgresql" || \
-        chown postgres:postgres /var/lib/postgresql
+    install -o postgres -g postgres -d /var/lib/postgresql
 
     # config directory permissions
     chown postgres:postgres /etc/postgresql
