@@ -1,3 +1,9 @@
+postgresql-common (248+pexip24u6) pexip; urgency=medium
+
+  * Bump version
+
+ -- John-Mark Bell <jmb@pexip.com>  Thu, 06 Mar 2025 11:44:37 +0000
+
 postgresql-common (248+pexip24u5) pexip; urgency=medium
 
   * common/postinst: use install instead of su
