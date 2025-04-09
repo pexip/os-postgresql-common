@@ -17,6 +17,7 @@ package TestLib;
 use strict;
 use Exporter;
 use Test::More;
+use Time::HiRes qw(usleep);
 use PgCommon qw/get_versions change_ugid next_free_port/;
 
 our $VERSION = 1.00;
@@ -56,17 +57,10 @@ sub os_release {
 # Return whether a given deb is installed.
 # Arguments: <deb name>
 sub deb_installed {
-    open (DPKG, "dpkg -s $_[0] 2>/dev/null|") or die "call dpkg: $!";
-    my $result = 0;
-    while (<DPKG>) {
-	if (/^Status: install ok installed/) {
-	    $result = 1;
-	    last;
-	}
-    }
+    open (DPKG, "dpkg-query --showformat '\${db:Status-Status}' --show $_[0] 2>/dev/null|") or die "call dpkg-query: $!";
+    my $result = <DPKG>;
     close DPKG;
-
-    return $result;
+    return $result eq "installed";
 }
 
 # Return whether a given rpm is installed.
@@ -132,7 +126,7 @@ sub dircontent {
     opendir D, $dir or return ["opendir $dir: $!"];
     my @e = grep { $_ ne '.' && $_ ne '..' } readdir (D);
     closedir D;
-    return \@e;
+    return [sort @e];
 }
 
 # Return environment of given PID
@@ -241,7 +235,12 @@ sub unlike_program_out {
 sub check_clean {
     note "Cleanup";
     is (`pg_lsclusters -h`, '', 'Cleanup: No clusters left behind');
-    is ((ps 'postgres'), '', 'No postgres processes left behind');
+    my $ps = ps 'postgres';
+    if ($ps ne "") {
+        usleep $delay;
+        $ps = ps 'postgres';
+    }
+    is ($ps, '', 'No postgres processes left behind');
 
     my @check_dirs = ('/etc/postgresql', '/var/lib/postgresql',
         '/var/run/postgresql');

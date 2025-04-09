@@ -15,12 +15,15 @@ use lib 't';
 use TestLib;
 use PgCommon;
 
-use Test::More tests => (@MAJORS == 1) ? 1 : 121 * 3;
+use Test::More tests => (@MAJORS == 1) ? 1 : 127 * 3;
 
 if (@MAJORS == 1) {
     pass 'only one major version installed, skipping upgrade tests';
     exit 0;
 }
+
+my $old_version = $MAJORS[0];
+my $new_version = $MAJORS[-1];
 
 foreach my $upgrade_options ('-m dump', '-m upgrade', '-m upgrade --link') {
 next if ($ENV{UPGRADE_METHOD} and $upgrade_options !~ /$ENV{UPGRADE_METHOD}$/); # hack to ease debugging individual methods
@@ -136,9 +139,15 @@ is_program_out 'postgres', "psql -qc \"CREATE TABLESPACE myts LOCATION '$tdir'\"
 is_program_out 'postgres', "psql -qc 'CREATE TABLE tstab (a int) TABLESPACE myts'",
     0, '', "creating table in tablespace";
 
-# Check clusters
+# check cluster properties
 like_program_out 'nobody', 'pg_lsclusters -h', 0,
     qr/^$MAJORS[0]\s+upgr\s+5432 online postgres/;
+SKIP: {
+    skip "no data checksums before 9.3", 2 if ($old_version < 9.3);
+    my $old_has_checksums = $old_version >= 18 ? "on" : "off";
+    is_program_out 'nobody', 'psql -Atc "show data_checksums" test', 0, "$old_has_checksums\n",
+        "old cluster checksums are $old_has_checksums";
+}
 
 # Check SELECT in original cluster
 my $select_old;
@@ -179,6 +188,10 @@ is_program_out 'nobody', 'psql -tAc "SELECT * FROM phone ORDER BY name" test', 0
     $$select_old, 'SELECT output is the same in original and upgraded test';
 is_program_out 'nobody', 'psql -tAc "SELECT * FROM nums" testro', 0,
     "1\n", 'SELECT output is the same in original and upgraded testro';
+
+# Check that table was analyzed
+like_program_out 'nobody', "psql -XAtc \"select analyze_count from pg_stat_user_tables where relname = 'phone'\" test", 0, qr/^[1-3]$/,
+    'check analyze count'; # --analyze-in-stages does 3 passes
 
 # Check sequence value
 is_program_out 'nobody', 'psql -Atc "SELECT nextval(\'odd10\')" test', 0, "5\n",
@@ -253,6 +266,14 @@ is_program_out 'postgres', "psql -Atc 'SELECT spcname FROM pg_tablespace ORDER B
     0, "myts\npg_default\npg_global\n", "check tablespace of upgraded table";
 is_program_out 'postgres', "psql -Atc \"SELECT spcname FROM pg_class c LEFT JOIN pg_tablespace t ON (c.reltablespace = t.oid) WHERE c.relname = 'tstab'\"",
     0, "myts\n", "check tablespace of upgraded table";
+
+# check cluster properties
+SKIP: {
+    skip "no data checksums before 9.3", 2 if ($new_version < 9.3);
+    my $new_has_checksums = ($old_version >= 18 or ($old_version < 18 and $new_version >= 18 and $upgrade_options =~ /dump/)) ? "on" : "off";
+    is_program_out 'nobody', 'psql -Atc "show data_checksums" test', 0, "$new_has_checksums\n",
+        "new cluster checksums are $new_has_checksums";
+}
 
 # stop servers, clean up
 is ((system "pg_dropcluster $MAJORS[0] upgr --stop"), 0, 'Dropping original cluster');

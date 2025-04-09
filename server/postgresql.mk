@@ -2,9 +2,12 @@
 
 # The PostgreSQL server packages include this in their debian/rules file.
 
+# MAJOR_VER is used in path names (15 for /usr/lib/postgresql/15)
 ifndef MAJOR_VER
 $(error MAJOR_VER must be defined before including this file)
 endif
+# MAJOR_PKG is used in package names (15 for postgresql-15)
+MAJOR_PKG = $(MAJOR_VER)
 
 # path to auxiliary build files
 AUX_MK_DIR = /usr/share/postgresql-common/server
@@ -24,7 +27,7 @@ include /usr/share/dpkg/buildflags.mk
 export DPKG_GENSYMBOLS_CHECK_LEVEL = 4
 
 # server catalog version
-CATVERSION = $(shell awk '/CATALOG_VERSION_NO/ { print $$3 }' src/include/catalog/catversion.h)
+CATVERSION = $(shell $(AUX_MK_DIR)/catversion)
 
 # configure flags
 
@@ -49,7 +52,6 @@ CONFIGURE_FLAGS = \
   --enable-nls \
   --enable-thread-safety \
   --enable-debug \
-  --enable-dtrace \
   --disable-rpath \
   --with-uuid=e2fs \
   --with-gnu-ld \
@@ -80,16 +82,30 @@ ifeq ($(call version_ge,10),y)
   CONFIGURE_FLAGS += --with-icu
 endif
 
-ifeq ($(call version_ge,11),y)
-  # if LLVM is installed, use it
-  ifneq ($(wildcard /usr/bin/llvm-config-*),)
+# LLVM support
+LLVM_VERSIONED_DEP=$(shell grep 'llvm-[0-9]*-dev' debian/control | grep -v "!$(DEB_HOST_ARCH)" | grep -o '[0-9]*' | head -n1)
+ifeq ($(call version_ge,18),y)
+  # PG 18+: check if postgresql-NN-jit is to be built
+  WITH_LLVM=$(shell dh_listpackages -p postgresql-18-jit)
+else
+  # PG 11..17: if package depends on LLVM, use it
+  ifeq ($(filter pkg.postgresql.nollvm,$(DEB_BUILD_PROFILES)),)
+    LLVM_DEP=$(shell grep 'llvm-dev' debian/control | grep -v "!$(DEB_HOST_ARCH)")
+    WITH_LLVM=$(LLVM_VERSIONED_DEP)$(LLVM_DEP)
+  endif
+endif
+
+ifneq ($(WITH_LLVM),)
+  ifneq ($(LLVM_VERSIONED_DEP),)
+    LLVM_VERSION = $(LLVM_VERSIONED_DEP)
+    LLVM_CONFIG = /usr/bin/llvm-config-$(LLVM_VERSION)
+  else
     LLVM_CONFIG = $(lastword $(shell ls -v /usr/bin/llvm-config-*))
     LLVM_VERSION = $(subst /usr/bin/llvm-config-,,$(LLVM_CONFIG))
-    CONFIGURE_FLAGS += --with-llvm LLVM_CONFIG=$(LLVM_CONFIG) CLANG=/usr/bin/clang-$(LLVM_VERSION)
-  else
-    LLVM_VERSION = 0.invalid # mute dpkg error on empty version fields in debian/control
   endif
-  TEMP_CONFIG = TEMP_CONFIG=$(AUX_MK_DIR)/test-with-jit.conf
+  CONFIGURE_FLAGS += --with-llvm LLVM_CONFIG=$(LLVM_CONFIG) CLANG=/usr/bin/clang-$(LLVM_VERSION)
+else
+  LLVM_VERSION = 0.invalid # mute dpkg error on empty version fields in debian/control
 endif
 
 ifeq ($(call version_ge,14),y)
@@ -99,6 +115,17 @@ endif
 ifeq ($(call version_ge,15),y)
   ifeq ($(filter pkg.postgresql.nozstd,$(DEB_BUILD_PROFILES)),)
     CONFIGURE_FLAGS += --with-zstd
+  endif
+endif
+
+ifeq ($(call version_ge,17),y)
+  WITH_PG_BSD_INDENT = y
+endif
+
+ifeq ($(call version_ge,18),y)
+  CONFIGURE_FLAGS += --with-libcurl
+  ifeq ($(DEB_HOST_ARCH_OS),linux)
+    CONFIGURE_FLAGS += --with-liburing
   endif
 endif
 
@@ -116,6 +143,7 @@ endif
 ifeq ($(DEB_HOST_ARCH_OS),linux)
   CONFIGURE_FLAGS += --with-systemd
   CONFIGURE_FLAGS += --with-selinux
+  CONFIGURE_FLAGS += --enable-dtrace
 endif
 
 ifneq ($(filter pkg.postgresql.cassert,$(DEB_BUILD_PROFILES)),)
@@ -123,10 +151,14 @@ ifneq ($(filter pkg.postgresql.cassert,$(DEB_BUILD_PROFILES)),)
   GENCONTROL_FLAGS += -Vcassert='$${Newline}$${Newline}This package has been built with cassert enabled.'
 endif
 
-# alpha fails stats tests with postgresql-15
+# alpha/hppa fail stats tests with postgresql-15
 # hurd implemented semaphores only recently and tests still fail a lot
+# ia64 fails the infinite_recurse() test with postgresql-16
 # plperl fails on kfreebsd-* (#704802)
-ifneq ($(filter alpha hurd kfreebsd,$(DEB_HOST_ARCH_OS)),)
+# powerpc fails thread test on postgresql-16
+# sh4 lets qemu segfaults when building postgresql-16
+# sparc64 fails bin/summarization-and-inprogress-insertion test with postgresql-15
+ifneq ($(filter alpha hppa hurd% ia64 kfreebsd% powerpc sh4 sparc64,$(DEB_HOST_ARCH)),)
   TEST_FAIL_COMMAND = echo "Ignoring test failures on this architecture"
 else
   TEST_FAIL_COMMAND = exit 1
@@ -155,6 +187,9 @@ override_dh_auto_build-arch:
 	$(MAKE) -C build/contrib all
 	# build tutorial stuff
 	$(MAKE) -C build/src/tutorial NO_PGXS=1
+ifeq ($(WITH_PG_BSD_INDENT),y)
+	$(MAKE) -C build/src/tools/pg_bsd_indent
+endif
 
 override_dh_auto_install-arch:
 	$(MAKE) -C build/doc/src/sgml install-man DESTDIR=$(CURDIR)/debian/tmp
@@ -162,8 +197,13 @@ override_dh_auto_install-arch:
 	$(MAKE) -C build/config install DESTDIR=$(CURDIR)/debian/tmp
 	$(MAKE) -C build/contrib install DESTDIR=$(CURDIR)/debian/tmp
 	# move SPI examples into server package (they wouldn't be in the doc package in an -A build)
-	mkdir -p debian/postgresql-$(MAJOR_VER)/usr/share/doc/postgresql-$(MAJOR_VER)
-	mv debian/tmp/usr/share/doc/postgresql-doc-$(MAJOR_VER)/extension debian/postgresql-$(MAJOR_VER)/usr/share/doc/postgresql-$(MAJOR_VER)/examples
+	mkdir -p debian/postgresql-$(MAJOR_PKG)/usr/share/doc/postgresql-$(MAJOR_VER)
+	mv debian/tmp/usr/share/doc/postgresql-doc-$(MAJOR_VER)/extension debian/postgresql-$(MAJOR_PKG)/usr/share/doc/postgresql-$(MAJOR_VER)/examples
+ifeq ($(WITH_PG_BSD_INDENT),y)
+	$(MAKE) -C build/src/tools/pg_bsd_indent install DESTDIR=$(CURDIR)/debian/tmp
+	install -m755 src/tools/pgindent/pgindent $(CURDIR)/debian/tmp/usr/lib/postgresql/$(MAJOR_VER)/bin
+	install -m644 src/tools/pgindent/typedefs.list $(CURDIR)/debian/tmp/usr/share/postgresql/$(MAJOR_VER)
+endif
 
 ifeq ($(filter nodoc,$(DEB_BUILD_PROFILES)),)
 override_dh_auto_install-indep:
@@ -188,36 +228,41 @@ override_dh_install-arch:
 	dh_install -a
 
 	# link README.Debian.gz to postgresql-common
-	mkdir -p debian/postgresql-$(MAJOR_VER)/usr/share/doc/postgresql-$(MAJOR_VER)
-	ln -s ../postgresql-common/README.Debian.gz debian/postgresql-$(MAJOR_VER)/usr/share/doc/postgresql-$(MAJOR_VER)/README.Debian.gz
+	mkdir -p debian/postgresql-$(MAJOR_PKG)/usr/share/doc/postgresql-$(MAJOR_VER)
+	ln -s ../postgresql-common/README.Debian.gz debian/postgresql-$(MAJOR_PKG)/usr/share/doc/postgresql-$(MAJOR_VER)/README.Debian.gz
 
 	# assemble perl version of pg_config in libpq-dev
+	mkdir -p debian/libpq-dev/usr/bin
 	sed -ne '1,/__DATA__/p' $(AUX_MK_DIR)/pg_config.pl > debian/libpq-dev/usr/bin/pg_config
-	LC_ALL=C debian/postgresql-client-$(MAJOR_VER)/usr/lib/postgresql/$(MAJOR_VER)/bin/pg_config | sed -e 's![^ ]*/debian/postgresql-client-$(MAJOR_VER)!!' >> debian/libpq-dev/usr/bin/pg_config
-	LC_ALL=C debian/postgresql-client-$(MAJOR_VER)/usr/lib/postgresql/$(MAJOR_VER)/bin/pg_config --help >> debian/libpq-dev/usr/bin/pg_config
+	LC_ALL=C debian/postgresql-client-$(MAJOR_PKG)/usr/lib/postgresql/$(MAJOR_VER)/bin/pg_config | sed -e 's![^ ]*/debian/postgresql-client-$(MAJOR_PKG)!!' >> debian/libpq-dev/usr/bin/pg_config
+	LC_ALL=C debian/postgresql-client-$(MAJOR_PKG)/usr/lib/postgresql/$(MAJOR_VER)/bin/pg_config --help >> debian/libpq-dev/usr/bin/pg_config
 	chmod 755 debian/libpq-dev/usr/bin/pg_config
 	[ "$$(debian/libpq-dev/usr/bin/pg_config --bindir)" = "/usr/lib/postgresql/$(MAJOR_VER)/bin" ]
 
 	# remove actual build path from Makefile.global for reproducibility
-	sed -i -e "s!^abs_top_builddir.*!abs_top_builddir = /build/postgresql-$(MAJOR_VER)/build!" \
-	       -e "s!^abs_top_srcdir.*!abs_top_srcdir = /build/postgresql-$(MAJOR_VER)/build/..!" \
+	sed -i -e "s!^abs_top_builddir.*!abs_top_builddir = /build/postgresql-$(MAJOR_PKG)/build!" \
+	       -e "s!^abs_top_srcdir.*!abs_top_srcdir = /build/postgresql-$(MAJOR_PKG)/build/..!" \
 	       -e 's!-f\(debug\|file\)-prefix-map=[^ ]* !!g' \
-	       debian/postgresql-client-$(MAJOR_VER)/usr/lib/postgresql/$(MAJOR_VER)/lib/pgxs/src/Makefile.global
+	       debian/postgresql-client-$(MAJOR_PKG)/usr/lib/postgresql/$(MAJOR_VER)/lib/pgxs/src/Makefile.global
 
 	# these are shipped in the pl packages
-	bash -c "rm -v debian/postgresql-$(MAJOR_VER)/usr/share/postgresql/$(MAJOR_VER)/extension/{plperl,plpython,pltcl,*_pl}*"
-	bash -c "rm -v debian/postgresql-$(MAJOR_VER)/usr/lib/postgresql/$(MAJOR_VER)/lib/{plperl,plpython,pltcl,*_pl}*"
-	bash -c "rm -rfv debian/postgresql-$(MAJOR_VER)/usr/lib/postgresql/$(MAJOR_VER)/lib/bitcode/*{plperl,plpython,pltcl}*"
+	bash -c "rm -v debian/postgresql-$(MAJOR_PKG)/usr/share/postgresql/$(MAJOR_VER)/extension/{plperl,plpython,pltcl,*_pl}*"
+	bash -c "rm -v debian/postgresql-$(MAJOR_PKG)/usr/lib/postgresql/$(MAJOR_VER)/lib/{plperl,plpython,pltcl,*_pl}*"
+	bash -c "rm -rfv debian/postgresql-$(MAJOR_PKG)/usr/lib/postgresql/$(MAJOR_VER)/lib/bitcode/*{plperl,plpython,pltcl}*"
+ifeq ($(call version_ge,18),y)
+	# shipped in the -jit package
+	rm -fv debian/postgresql-$(MAJOR_PKG)/usr/lib/postgresql/$(MAJOR_VER)/lib/llvmjit.so
+endif
 
 	# record catversion in a file
-	echo $(CATVERSION) > debian/postgresql-$(MAJOR_VER)/usr/share/postgresql/$(MAJOR_VER)/catalog_version
+	echo $(CATVERSION) > debian/postgresql-$(MAJOR_PKG)/usr/share/postgresql/$(MAJOR_VER)/catalog_version
 
 override_dh_install-indep:
 	dh_install -i
 
-	if [ -d debian/postgresql-doc-$(MAJOR_VER) ]; then set -e; \
-		install -d debian/postgresql-doc-$(MAJOR_VER)/usr/share/doc/postgresql-doc-$(MAJOR_VER)/tutorial; \
-		install src/tutorial/*.c src/tutorial/*.source src/tutorial/Makefile src/tutorial/README debian/postgresql-doc-$(MAJOR_VER)/usr/share/doc/postgresql-doc-$(MAJOR_VER)/tutorial; \
+	if [ -d debian/postgresql-doc-$(MAJOR_PKG) ]; then set -e; \
+		install -d debian/postgresql-doc-$(MAJOR_PKG)/usr/share/doc/postgresql-doc-$(MAJOR_VER)/tutorial; \
+		install src/tutorial/*.c src/tutorial/*.source src/tutorial/Makefile src/tutorial/README debian/postgresql-doc-$(MAJOR_PKG)/usr/share/doc/postgresql-doc-$(MAJOR_VER)/tutorial; \
 	fi
 
 override_dh_auto_test-indep:
@@ -231,7 +276,6 @@ ifeq (, $(findstring nocheck, $(DEB_BUILD_OPTIONS)))
 	# tell pg_upgrade to create its sockets in /tmp to avoid too long paths
 	unset LANG LC_CTYPE MAKELEVEL; ulimit -c unlimited; \
 	if ! make -C build check-world \
-	  $(TEMP_CONFIG) \
 	  PGSOCKETDIR="/tmp" \
 	  PG_TEST_EXTRA='ssl' \
 	  PROVE_FLAGS="--verbose"; \
@@ -246,12 +290,15 @@ ifeq (, $(findstring nocheck, $(DEB_BUILD_OPTIONS)))
 	    done; \
 	    $(TEST_FAIL_COMMAND); \
 	fi
+ifeq ($(WITH_PG_BSD_INDENT),y)
+	$(MAKE) -C build/src/tools/pg_bsd_indent test DESTDIR=$(CURDIR)/debian/tmp
+endif
 endif
 
 override_dh_installdeb-arch:
 	dh_installdeb
 	# record catversion in preinst
-	sed -i -e 's/@CATVERSION@/$(CATVERSION)/' debian/postgresql-$(MAJOR_VER)/DEBIAN/preinst
+	sed -i -e 's/@CATVERSION@/$(CATVERSION)/' debian/postgresql-$(MAJOR_PKG)/DEBIAN/preinst
 
 override_dh_gencontrol:
 	# record catversion in .deb control file

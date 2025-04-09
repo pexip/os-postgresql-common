@@ -4,7 +4,7 @@
 #
 # (C) 2005-2009 Martin Pitt <mpitt@debian.org>
 # (C) 2013 Peter Eisentraut <petere@debian.org>
-# (C) 2013-2022 Christoph Berg <myon@debian.org>
+# (C) 2013-2025 Christoph Berg <myon@debian.org>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -31,15 +31,51 @@ delete @ENV{'IFS', 'CDPATH', 'ENV', 'BASH_ENV'};
 my ($version, $newversion, $cluster, $newcluster);
 my (%info, %newinfo);
 my ($encoding, $old_lc_ctype, $old_lc_collate); # old cluster encoding
+my ($old_locale_provider, $old_icu_locale, $old_icu_rules);
 my $maintenance_db = 'template1';
+my $keep_on_error = 0;
 
 # do not trip over cwd not being accessible to postgres superuser
 chdir '/';
 
+sub pre_upgrade_check($$$) {
+    my ($oldversion, $newversion, $force_packages) = @_;
+
+    return 1 if ($version == $newversion);
+
+    my @new_packages = package_list("postgresql*-$newversion*");
+
+    my $missing = 0;
+    for my $oldpkg (package_list("postgresql*-$oldversion*")) {
+        next if ($oldpkg =~ /-(dbgsym|doc)/);
+        my $newpkg = $oldpkg;
+        $newpkg =~ s/-$oldversion/-$newversion/;
+
+        next if ($newpkg =~ /^postgresql-contrib-/ and $newversion >= 10); # postgresql-contrib-NN merged into postgresql-NN in 10+
+
+        if (not grep {$_ eq $newpkg} @new_packages) {
+            print "$oldpkg is installed, but $newpkg is missing\n";
+            $missing++;
+        }
+    }
+
+    if ($missing) {
+        print "$missing package(s) from version $oldversion missing for version $newversion\n";
+        if ($force_packages) {
+            print "Ignoring as --force-package was used\n";
+        } else {
+            print "Install the missing packages and try pg_upgradecluster again. To ignore the issue, use --force-packages\n";
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
 # update the new cluster's conffiles
 sub adapt_conffiles {
     my ($newversion, $newcluster, $configfile) = @_;
-    my %c = read_cluster_conf_file $newversion, $newcluster, $configfile;
+    my %c = read_cluster_conf_file $newversion, $newcluster, $configfile, 0;
 
     # Arguments: <ref to conf hash> <name> <comment>
     my $deprecate = sub {
@@ -198,6 +234,17 @@ sub adapt_conffiles {
 
     if ($newversion >= '16') {
         $deprecate->(\%c, 'promote_trigger_file', 'does not exist anymore, use pg_promote() instead');
+        $deprecate->(\%c, 'vacuum_defer_cleanup_age', 'does not exist anymore');
+        $deprecate->(\%c, 'force_parallel_mode', 'does not exist anymore');
+    }
+
+    if ($newversion >= '17') {
+        $deprecate->(\%c, 'db_user_namespace', 'does not exist anymore');
+        $deprecate->(\%c, 'old_snapshot_threshold', 'does not exist anymore');
+    }
+
+    if ($newversion >= '18') {
+        $deprecate->(\%c, 'extension_destdir', 'replaced by extension_control_path');
     }
 }
 
@@ -301,7 +348,7 @@ sub get_encoding {
     if ($version <= '8.3') {
 	($old_lc_ctype, $old_lc_collate) = get_cluster_locales $version, $cluster;
     } else {
-	($old_lc_ctype, $old_lc_collate) = get_db_locales $version, $cluster, $maintenance_db;
+	($old_lc_ctype, $old_lc_collate, $old_locale_provider, $old_icu_locale, $old_icu_rules) = get_db_locales $version, $cluster, $maintenance_db;
     }
     unless ($encoding && $old_lc_ctype && $old_lc_collate) {
 	error 'could not get cluster locales';
@@ -320,6 +367,34 @@ sub run_parts {
     }
 }
 
+sub run_upgrade_scripts($) {
+    my $phase = shift;
+
+    print "Running $phase phase upgrade hook scripts ...\n";
+    if (!fork) {
+        change_ugid $info{'owneruid'}, $info{'ownergid'};
+
+        if ($PgCommon::rpm) {
+            run_parts ("$PgCommon::common_confdir/pg_upgradecluster.d",
+                $version, $newcluster, $newversion, $phase);
+            exit;
+        }
+
+        my @argv = ('run-parts', '--lsbsysinit', '-a', $version, '-a', $newcluster,
+            '-a', $newversion, '-a', $phase,
+            "$PgCommon::common_confdir/pg_upgradecluster.d");
+        error "$PgCommon::common_confdir/pg_upgradecluster.d script failed" if system @argv;
+        exit;
+    }
+    wait;
+    if ($? > 0) {
+        unless ($keep_on_error) {
+            print STDERR "Error during running upgrade hooks, removing new cluster\n";
+            system 'pg_dropcluster', '--stop', $newversion, $newcluster;
+        }
+        exit 1;
+    }
+}
 
 #
 # Execution starts here
@@ -330,15 +405,20 @@ sub run_parts {
 my $newest_version = get_newest_version('postgres');
 $newversion = $newest_version;
 
+my $check_only = 0;
+my $force_packages = 0;
 my $method = 'dump';
 my $link = 0;
 my $clone = 0;
+my $data_checksums; # default undef
 my $keep_port = 0;
 my $start = -1; # -1 = auto
 
 my ($locale, $lc_collate, $lc_ctype, $lc_messages, $lc_monetary, $lc_numeric,
     $lc_time, $logfile, $old_bindir, $jobs);
 GetOptions ('v|version=s' => \$newversion,
+            'check' => \$check_only,
+            'force-packages' => \$force_packages,
 	    'locale=s' => \$locale,
 	    'lc-collate=s' => \$lc_collate,
 	    'lc-ctype=s' => \$lc_ctype,
@@ -351,17 +431,18 @@ GetOptions ('v|version=s' => \$newversion,
 	    'j|jobs=s', => \$jobs,
 	    'k|link' => \$link,
             'clone' => \$clone,
+            'data-checksums!' => \$data_checksums,
             'keep-port' => \$keep_port,
             'rename=s' => \$newcluster,
             'old-bindir=s' => \$old_bindir,
             'maintenance-db=s' => \$maintenance_db,
             'start!' => \$start,
+            'keep-on-error' => \$keep_on_error,
     ) or exit 1;
 
 if ($method eq 'dump') {
     error 'cannot use --link with --method=dump' if ($link);
     error 'cannot use --clone with --method=dump' if ($clone);
-    error 'cannot use --jobs with --method=dump' if ($jobs);
 } elsif ($method eq 'link') {
     $method = 'upgrade';
     $link = 1;
@@ -370,6 +451,9 @@ if ($method eq 'dump') {
     $clone = 1;
 } elsif ($method ne 'upgrade') {
     error 'method must be "dump", "upgrade", "link", or "clone"';
+}
+if (defined $data_checksums and $method ne 'dump') {
+    error "can only use --(no-)data-checksums with --method=dump";
 }
 
 # untaint
@@ -384,7 +468,10 @@ if ($method eq 'dump') {
 ($logfile) = $logfile =~ /^([^\n]+)$/ if $logfile;
 ($old_bindir) = $old_bindir =~ /^(\/.*)$/ if $old_bindir;
 ($maintenance_db) = $maintenance_db =~ /^([\w-]+)$/ if $maintenance_db;
-($jobs) = $jobs =~ /^(\d+)$/ if $jobs;
+if ($jobs) {
+    ($jobs) = $jobs =~ /^(\d+)$/;
+    $ENV{PGJOBS} = $jobs; # make setting available to upgrade hooks
+}
 
 if ($#ARGV < 1) {
     print "Usage: $0 [OPTIONS] <old version> <cluster name> [<new data directory>]\n";
@@ -410,6 +497,17 @@ error "cluster $version/$cluster is already on version $newversion. " .
 if (cluster_exists $newversion, $newcluster) {
     error "target cluster $newversion/$newcluster already exists";
 }
+
+if (not pre_upgrade_check($version, $newversion, $force_packages)) {
+    error "pg_upgradecluster pre-upgrade checks failed";
+}
+
+if ($check_only) {
+    print "pg_upgradecluster pre-upgrade checks ok\n";
+    exit;
+}
+
+print "Upgrading cluster $version/$cluster to $newversion/$newcluster ...\n";
 
 my $oldcontrol = get_cluster_controldata ($version, $cluster);
 
@@ -451,7 +549,6 @@ my $upgrade_port = next_free_port;
 my @argv = ('pg_createcluster', '-u', $info{'owneruid'}, '-g', $info{'ownergid'},
     '--socketdir', $info{'socketdir'}, '--port', $upgrade_port, '--no-status',
     $newversion, $newcluster);
-
 push @argv, ('--datadir', $datadir) if $datadir;
 push @argv, ('--logfile', $logfile) if $logfile;
 push @argv, ('--encoding', $encoding) unless $locale or $lc_ctype;
@@ -464,8 +561,23 @@ push @argv, ('--lc-messages', $lc_messages) if $lc_messages;
 push @argv, ('--lc-monetary', $lc_monetary) if $lc_monetary;
 push @argv, ('--lc-numeric', $lc_numeric) if $lc_numeric;
 push @argv, ('--lc-time', $lc_time) if $lc_time;
+push @argv, ('--');
+push @argv, ('--locale-provider', $old_locale_provider) if $old_locale_provider;
+push @argv, ('--icu-locale', $old_icu_locale) if $old_icu_locale;
+push @argv, ('--icu-rules', $old_icu_rules) if $old_icu_rules;
+if ($oldcontrol->{'Data page checksum version'} or (defined $data_checksums and $data_checksums == 1)) { # oldcontrol 0 = off
+    # enable data checksums if the old cluster had them
+    push @argv, ('--data-checksums');
+} else {
+    if ($newversion >= 18 and ($method eq 'upgrade' or (defined $data_checksums and $data_checksums == 0))) {
+        # disable data checksums when they would be enabled by default (18+), but the method uses doesn't allow transitioning
+        push @argv, ('--no-data-checksums');
+    }
+}
+push @argv, ('--encryption-key-command', $info{config}->{encryption_key_command}) if $info{config}->{encryption_key_command}; # PostgreSQL TDE
+
+# call pg_createcluster
 delete $ENV{'LC_ALL'};
-push @argv, ('--', '--data-checksums') if $oldcontrol->{'Data page checksum version'}; # 0 = off
 error "Could not create target cluster" if system @argv;
 print "\n";
 
@@ -489,30 +601,8 @@ my $upgrade_scripts = (-d "$PgCommon::common_confdir/pg_upgradecluster.d" &&
          `run-parts --test $PgCommon::common_confdir/pg_upgradecluster.d`));
 
 # Run upgrade scripts in init phase
-if ($upgrade_scripts) {
-    print "Running <init> phase upgrade hook scripts...\n";
-    if (!fork) {
-	change_ugid $info{'owneruid'}, $info{'ownergid'};
-
-        if ($PgCommon::rpm) {
-            run_parts ("$PgCommon::common_confdir/pg_upgradecluster.d",
-                $version, $newcluster, $newversion, 'init');
-            exit;
-        }
-
-	@argv = ('run-parts', '--lsbsysinit', '-a', $version, '-a', $newcluster,
-	    '-a', $newversion, '-a', 'init',
-	    "$PgCommon::common_confdir/pg_upgradecluster.d");
-	error "$PgCommon::common_confdir/pg_upgradecluster.d script failed" if system @argv;
-        exit 0;
-    }
-    wait;
-    if ($? > 0) {
-        print STDERR "Error during running upgrade hooks, removing new cluster\n";
-        system 'pg_dropcluster', '--stop', $newversion, $newcluster;
-        exit 1;
-    }
-}
+run_upgrade_scripts('init') if ($upgrade_scripts);
+print "\n";
 
 # dump cluster; drop to cluster owner privileges
 
@@ -625,11 +715,6 @@ if (!fork) {
 	    close SINK;
 
 	    # clean up
-	    print 'Analyzing database ', $db, "...\n";
-	    (system $psql, '-h', $newsocket, '-p', $newinfo{'port'}, '-qX',
-		'-d', $db, '-c', 'ANALYZE') == 0 or
-		error 'Could not ANALYZE database';
-
 	    unless ($databases{$db}) {
 		print "Disabling access to database $db again\n";
 		(system $psql, '-h', $oldsocket, '-p', $info{'port'}, '-qX',
@@ -670,8 +755,7 @@ if (!fork) {
 	push @argv, "--clone" if $clone;
 	push @argv, '-j', $jobs if $jobs;
 
-	# Make a directory for pg_upgrade to store its reports and log
-	# files.  It will not be removed.
+        # Make a directory for pg_upgrade to store its reports and log files.
 	my $logdir = tempdir("/var/log/postgresql/pg_upgradecluster-$version-$newversion-$newcluster.XXXX");
 	chdir $logdir;
 
@@ -683,8 +767,15 @@ if (!fork) {
 	# pg_ctlcluster, but not by pg_upgrade).
 	unlink "/var/run/postgresql/$version-$cluster.pid";
 
-	$status == 0 or error "pg_upgrade run failed. Logfiles are in $logdir";
-        print "pg_upgrade output scripts are in $logdir\n";
+	# Move output files to our log directory
+	if (-d (my $outdir =  "$newinfo{pgdata}/pg_upgrade_output.d")) {
+	    system mv => $outdir, $logdir
+		and error "Could not move $outdir to $logdir";
+        }
+        rmdir $logdir; # remove it if it's empty
+        print "pg_upgradecluster: pg_upgrade output scripts are in $logdir\n" if (-d $logdir);
+
+        exit 1 if ($status != 0);
     }
 
     exit 0;
@@ -693,15 +784,20 @@ if (!fork) {
 wait;
 
 if ($?) {
-    print STDERR "Error during cluster dumping, removing new cluster\n";
-    system 'pg_dropcluster', '--stop', $newversion, $newcluster;
+    print "\n";
+
+    unless ($keep_on_error) {
+        print STDERR "Error during cluster dumping, removing new cluster\n";
+        system 'pg_dropcluster', '--stop', $newversion, $newcluster;
+    }
 
     # Restart old cluster to allow connections again (two steps because we started without systemd)
-    if (system 'pg_ctlcluster', $version, $cluster, 'stop') {
-        error 'could not stop old cluster, please do that manually';
-    }
-    if (system 'pg_ctlcluster', $version, $cluster, 'start') {
-        error 'could not start old cluster, please do that manually';
+    system 'pg_ctlcluster', $version, $cluster, 'stop'; # ignore errors, it might be down anyway
+    if ($info{running}) {
+        print "Starting old cluster again ...\n";
+        if (system 'pg_ctlcluster', $version, $cluster, 'start') {
+            error 'could not start old cluster, please do that manually';
+        }
     }
     exit 1;
 }
@@ -752,24 +848,11 @@ if ($start) {
 
 # Run upgrade scripts in finish phase
 if ($upgrade_scripts) {
-    print "Running <finish> phase upgrade hook scripts...\n";
-    if (!fork) {
-	change_ugid $info{'owneruid'}, $info{'ownergid'};
-
-        if ($PgCommon::rpm) {
-            run_parts ("$PgCommon::common_confdir/pg_upgradecluster.d",
-                $version, $newcluster, $newversion, 'finish');
-            exit;
-        }
-
-	@argv = ('run-parts', '--lsbsysinit', '-a', $version, '-a', $newcluster,
-	    '-a', $newversion, '-a', 'finish',
-	    "$PgCommon::common_confdir/pg_upgradecluster.d");
-	error "$PgCommon::common_confdir/pg_upgradecluster.d script failed" if system @argv;
-        exit 0;
+    if ($start) {
+        run_upgrade_scripts('finish');
+    } else {
+        print "Warning: Skipping upgrade scripts because --no-start was given\n";
     }
-    wait;
-    exit $? >> 8 if ($?);
 }
 
 print "\nSuccess. Please check that the upgraded cluster works. If it does,
@@ -795,8 +878,17 @@ B<pg_upgradecluster> upgrades an existing PostgreSQL server cluster (i. e. a
 collection of databases served by a B<postgres> instance) to a new version
 specified by I<newversion> (default: latest available version).  The
 configuration files of the old version are copied to the new cluster and
-adjusted for the new version.  The new cluster is set up to use data page
-checksums if the old cluster uses them.
+adjusted for the new version.
+
+By default, L<pg_dump(1)> is used to migrate data and indexes to the new
+cluster. This is slow, but safe. Upgrade variants based on L<pg_upgrade(1)> can
+be selected using the B<--method=upgrade> parameter. This is faster, but care
+must be taken when using it in the context of an operating system upgrade. The
+sorting order ("collation") used in indexes is determined by B<libc> and
+B<libicu>, and new versions of these libraries might have a differ ordering,
+B<requiring index rebuilds after the upgrade>, or acknowledging that the
+ordering did not change using the B<ALTER COLLATION REFRESH VERSION> command.
+This step is not automated by B<pg_upgradecluster>.
 
 The cluster of the old version will be configured to use a previously unused
 port since the upgraded one will use the original port. The old cluster is not
@@ -819,6 +911,15 @@ this defaults to /var/lib/postgresql/I<newversion>/I<name>.
 =item B<-v> I<newversion>
 
 Set the version to upgrade to (default: latest available).
+
+=item B<--check>
+
+Check if all packages required for the upgrade are installed.
+
+=item B<--force-packages>
+
+Proceed with upgrading even when not all packages from the old PostgreSQL
+version are installed for the new version as well.
 
 =item B<--logfile> I<filel>
 
@@ -868,11 +969,22 @@ In pg_upgrade mode, use efficient file cloning (also known as "reflinks"
 on some systems) instead of copying files to the new cluster. This option
 is merely passed on to pg_upgrade.  See L<pg_upgrade(1)> for details.
 
+=item B<--data-checksums>, B<--no-data-checksums>
+
+By default, the new cluster is set up to use data page checksums if the old
+cluster already uses them. Additionally, when using the B<dump> upgrade method,
+the new cluster will use data page checksums when upgrading to PostgreSQL 18 or
+later (which enables data page checksums by default).
+
+The B<--method=dump> behavior can explictly be controlled by the
+B<--data-checksums> and B<--no-data-checksums> options.
+
 =item B<-j>, B<--jobs>
 
 In pg_upgrade mode, number of simultaneous processes to use. This
-option is merely passed on to pg_upgrade. See L<pg_upgrade(1)>
-for details.
+option is passed on to pg_upgrade. See L<pg_upgrade(1)> for details.
+It is also used by the B<analyze> upgrade hook (via the B<PGJOBS> environment
+variable).
 
 =item B<--keep-port>
 
@@ -896,6 +1008,11 @@ Database to connect to for maintenance queries.  The default is B<template1>.
 
 Start the new database cluster after upgrading. The default is to start the new
 cluster if the old cluster was running, or if upgrade hook scripts are present.
+
+=item B<--keep-on-error>
+
+If upgrading fails, the newly created cluster is removed. This option disables
+that.
 
 =back
 
@@ -936,7 +1053,8 @@ The scripts are called as the user who owns the database.
 
 =head1 SEE ALSO
 
-L<pg_createcluster(8)>, L<pg_dropcluster(8)>, L<pg_lsclusters(1)>, L<pg_wrapper(1)>
+L<pg_createcluster(8)>, L<pg_dropcluster(8)>, L<pg_lsclusters(1)>, L<pg_wrapper(1)>,
+L<pg_dump(1)>, L<pg_upgrade(1)>
 
 =head1 AUTHORS
 

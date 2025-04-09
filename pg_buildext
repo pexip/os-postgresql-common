@@ -1,10 +1,10 @@
-#!/bin/sh
+#!/bin/bash
 #
 # build a PostgreSQL module based on PGXS for given list of supported major
 # versions
 #
 # (C) 2010 Dimitri Fontaine <dfontaine@hi-media.com>
-# (C) 2011-2022 Christoph Berg <myon@debian.org>
+# (C) 2011-2025 Christoph Berg <myon@debian.org>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -23,13 +23,11 @@ die() {
     exit 1
 }
 
-VENVARGS=""
-MAKEVARS=""
 while getopts "c:i:m:o:s" opt ; do
     case $opt in
-	c|i|o) VENVARGS="$VENVARGS -$opt $OPTARG" ;;
+	c|i|o) PG_VIRTUALENV_ARGS="${PG_VIRTUALENV_ARGS:-} -$opt $OPTARG" ;;
 	m) MAKEVARS="$OPTARG" ;;
-	s) VENVARGS="$VENVARGS -$opt" ;;
+	s) PG_VIRTUALENV_ARGS="${PG_VIRTUALENV_ARGS:-} -$opt" ;;
 	*) exit 1 ;;
     esac
 done
@@ -39,21 +37,29 @@ shift $(($OPTIND - 1))
 # positional arguments: action [srcdir] [target [opt]]
 [ "${1:-}" ] || die "no action given"
 action="$1"
-if [ -d "${2:-}" ] && [ "${3:-}" ]; then # optional: $2 is source directory
-    srcdir="${2:-}"
+shift
+
+if [ -d "${1:-}" ] && [ "${2:-}" ]; then # optional: source directory
+    srcdir="${1:-}"
     [ "$srcdir" = "." ] && srcdir="$PWD"
     shift
 else
     srcdir="$PWD"
 fi
-target="${2:-}"
-opt="${3:-}"
+target="${1:-}"
+opt="${2:-}"
+
+# pass -j to make
+parallel=$(echo ${DEB_BUILD_OPTIONS:-} | grep -o 'parallel=[0-9]*' || :)
+if [ "$parallel" ]; then
+    MAKEVARS="${MAKEVARS:-} -j${parallel#parallel=}"
+fi
 
 prepare_env() {
     local version=$1
     vtarget=`echo $target | sed -e "s:%v:$version:g"`
-    pgc="/usr/lib/postgresql/$version/bin/pg_config"
-    [ -e "$pgc" ] || die "$pgc does not exist"
+    export PG_CONFIG="/usr/lib/postgresql/$version/bin/pg_config"
+    [ -e "$PG_CONFIG" ] || die "$PG_CONFIG does not exist"
     if [ "${CFLAGS:-}" ]; then
         export COPT="$CFLAGS"
     fi
@@ -65,7 +71,7 @@ configure() {
 
     mkdir -p $vtarget
     ( echo "calling configure in $vtarget" &&
-      cd $vtarget && $srcdir/configure $confopts PG_CONFIG="$pgc" VPATH="$srcdir" ) || return $?
+      cd $vtarget && $srcdir/configure $confopts PG_CONFIG="$PG_CONFIG" VPATH="$srcdir" ) || return $?
 }
 
 build() {
@@ -78,7 +84,7 @@ build() {
     mkdir -p $vtarget
     # if a Makefile was created by configure, use it, else the top level Makefile
     [ -f $vtarget/Makefile ] || makefile="-f $srcdir/Makefile"
-    make -C $vtarget ${makefile:-} PG_CONFIG="$pgc" VPATH="$srcdir" USE_PGXS=1 $MAKEVARS || return $?
+    make -C $vtarget ${makefile:-} PG_CONFIG="$PG_CONFIG" VPATH="$srcdir" USE_PGXS=1 ${MAKEVARS:-} || return $?
 }
 
 substvars() {
@@ -111,7 +117,7 @@ install() {
     mkdir -p $vtarget
     # if a Makefile was created by configure, use it, else the top level Makefile
     [ -f $vtarget/Makefile ] || makefile="-f $srcdir/Makefile"
-    make -C $vtarget ${makefile:-} install DESTDIR="$PWD/debian/$package" PG_CONFIG="$pgc" VPATH="$srcdir" USE_PGXS=1 $MAKEVARS || return $?
+    make -C $vtarget ${makefile:-} install DESTDIR="$PWD/debian/$package" PG_CONFIG="$PG_CONFIG" VPATH="$srcdir" USE_PGXS=1 ${MAKEVARS:-} || return $?
     substvars "$1" "$package"
 }
 
@@ -127,12 +133,12 @@ loop() {
     package=$(echo $target | sed -e "s:%v:$1:g")
 
     echo "# $1: make"
-    make -C "$srcdir"         PG_CONFIG="$pgc" USE_PGXS=1 $MAKEVARS || return $?
+    make -C "$srcdir"         PG_CONFIG="$PG_CONFIG" USE_PGXS=1 ${MAKEVARS:-} || return $?
     echo "# $1: make install"
-    make -C "$srcdir" install DESTDIR="$PWD/debian/$package" PG_CONFIG="$pgc" USE_PGXS=1 $MAKEVARS || return $?
+    make -C "$srcdir" install DESTDIR="$PWD/debian/$package" PG_CONFIG="$PG_CONFIG" USE_PGXS=1 ${MAKEVARS:-} || return $?
     substvars "$1" "$package"
     echo "# $1: make clean"
-    make -C "$srcdir" clean   PG_CONFIG="$pgc" USE_PGXS=1 $MAKEVARS # clean errors are fatal
+    make -C "$srcdir" clean   PG_CONFIG="$PG_CONFIG" USE_PGXS=1 ${MAKEVARS:-} # clean errors are fatal
 }
 
 installcheck() {
@@ -156,9 +162,10 @@ installcheck() {
     if [ "$target" ] && [ "$target" != "." ]; then # if target is given, use it, else stay in the top source dir
 	# if a Makefile was created by configure, use it, else the top level Makefile
 	[ -f $vtarget/Makefile ] || makefile="-f $srcdir/Makefile"
-        if ! pg_virtualenv ${PKGARGS:-} $VENVARGS -v $1 \
+        if ! pg_virtualenv ${PKGARGS:-} ${PG_VIRTUALENV_ARGS:-} -v $1 \
 	    make -C $vtarget ${makefile:-} installcheck ${DESTDIR:-} \
-		PG_CONFIG="$pgc" VPATH="$srcdir" USE_PGXS=1 $MAKEVARS; then
+                PG_CONFIG="$PG_CONFIG" VPATH="$srcdir" USE_PGXS=1 \
+                PROVE_FLAGS=--verbose ${MAKEVARS:-}; then
 	    if [ -r $vtarget/regression.diffs ]; then
 		echo "**** $vtarget/regression.diffs ****"
 		cat $vtarget/regression.diffs
@@ -166,8 +173,9 @@ installcheck() {
 	    return 1
 	fi
     else
-        if ! pg_virtualenv ${PKGARGS:-} $VENVARGS -v $1 \
-	    make installcheck ${DESTDIR:-} PG_CONFIG="$pgc" USE_PGXS=1 $MAKEVARS; then
+        if ! pg_virtualenv ${PKGARGS:-} ${PG_VIRTUALENV_ARGS:-} -v $1 \
+            make installcheck ${DESTDIR:-} PG_CONFIG="$PG_CONFIG" USE_PGXS=1 \
+                PROVE_FLAGS=--verbose ${MAKEVARS:-}; then
 	    if [ -r regression.diffs ]; then
 		echo "**** regression.diffs ****"
 		cat regression.diffs
@@ -175,8 +183,22 @@ installcheck() {
 	    return 1
 	fi
         # since we are in the top-level directory, clean up behind us
-        make clean PG_CONFIG="$pgc" USE_PGXS=1 $MAKEVARS
+        make clean PG_CONFIG="$PG_CONFIG" USE_PGXS=1 ${MAKEVARS:-}
     fi
+}
+
+run_run () {
+    local v=$1
+    shift
+    prepare_env $v
+
+    (
+        echo + "${@//%v/$v}"
+        "${@//%v/$v}" < $PSQLTMP
+    ) || return $?
+}
+run_run_installed () {
+    run_run "$@"
 }
 
 run_psql () {
@@ -198,7 +220,7 @@ run_psql () {
         if [ "$target" ] && [ "$target" != "." ]; then # if target is given, use it, else stay in the top source dir
             cd $target
         fi
-        pg_virtualenv ${PKGARGS:-} $VENVARGS -v $1 \
+        pg_virtualenv ${PKGARGS:-} ${PG_VIRTUALENV_ARGS:-} -v $1 \
             psql -Xe -v ON_ERROR_STOP=1 < $PSQLTMP
     ) || return $?
 }
@@ -222,7 +244,7 @@ run_virtualenv () {
         if [ "$target" ] && [ "$target" != "." ]; then # if target is given, use it, else stay in the top source dir
             cd $target
         fi
-        pg_virtualenv ${PKGARGS:-} $VENVARGS -v $1 ${SHELL:-/bin/sh} -ex < $PSQLTMP
+        pg_virtualenv ${PKGARGS:-} ${PG_VIRTUALENV_ARGS:-} -v $1 ${SHELL:-/bin/sh} -ex < $PSQLTMP
     ) || return $?
 }
 
@@ -254,6 +276,10 @@ versions() {
 # (not necessarily the same as listed in debian/control)
 installed_versions() {
     [ -e debian/control.in ] || die "debian/control.in not found"
+    if ! grep -q '^Package: .*PGVERSION' debian/control.in; then
+        die "No Package: PGVERSION pattern in debian/control.in found"
+    fi
+
     # extract package name template(s) from control.in, split into prefix and suffix
     perl -lne 'print "$1 $2" if /^Package: (.*)PGVERSION(.*)/' debian/control.in | \
         while read prefix suffix; do
@@ -276,14 +302,32 @@ gencontrol() {
 
     perl -e \
         '$/ = ""; # read paragraphs
-        my $newest_pgversion = $ENV{PGVERSIONS} =~ s/.*\s//sr;
+        my @pgversions = split /\s+/, $ENV{PGVERSIONS};
+        my $newest_pgversion = $pgversions[-1];
+
+        sub replace_all ($) {
+            $_ = shift;
+            my @out;
+            for my $version (@pgversions) {
+                push @out, s/PGVERSIONS/$version/rg;
+            }
+            return join ", ", @out;
+        }
+
         while (<>) {
             chomp;
             if (/^Package: .*PGVERSION/) {
-                foreach my $version (split /\n/, $ENV{PGVERSIONS}) {
+                foreach my $version (@pgversions) {
                     push @out, s/PGVERSION/$version/rg;
                 }
             } else {
+                s/(
+                    [^[:space:](),]*
+                    PGVERSIONS
+                    [^[:space:](),]*
+                    (?:\s*\([^(),]*\))? # optional part in parentheses
+                    [^[:space:](),]*
+                    )/replace_all($1)/xeg;
                 s/PGVERSION/$newest_pgversion/g;
                 push @out, $_;
             }
@@ -314,6 +358,9 @@ updatecontrol() {
     if [ -f debian/tests/control.in ]; then
         cat $tmptestscontrol > debian/tests/control
     fi
+
+    # re-check build-dependencies (no error raised)
+    ( dpkg-checkbuilddeps 2>&1 || : ) | sed -e 's/error/notice/'
 }
 
 # when a version is included in the action, just act on this one (this is
@@ -408,7 +455,7 @@ case $action in
         exit $ret
         ;;
 
-    psql|virtualenv)
+    run|run_installed|psql|virtualenv)
         PSQLTMP=$(mktemp --tmpdir psql.XXXXXX)
         trap "rm -f $PSQLTMP" EXIT
         # if we are fed any input (and hence aren't reading from a terminal),
@@ -417,7 +464,7 @@ case $action in
 
         # prefer testing installed versions over supported versions as the set
         # of versions might have changed (unless a package-pattern is provided)
-        if [ -f debian/control.in ] && [ -z "$opt" ]; then
+        if [ "$action" != "run" ] && [ -f debian/control.in ] && [ -z "$opt" ]; then
             versions=$(installed_versions)
         else
             versions=$(versions)
@@ -426,7 +473,7 @@ case $action in
         ret=0
         for v in $versions; do
             echo "### PostgreSQL $v $action ###"
-            if run_$action $v; then
+            if run_$action $v "$@"; then
                 echo "### End $v $action ###"
             else
                 ret=$?

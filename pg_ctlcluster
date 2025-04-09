@@ -116,7 +116,7 @@ sub start {
     }
 
     # prepare environment (empty except for content of 'environment', and LANG)
-    %ENV = read_cluster_conf_file $version, $cluster, 'environment';
+    %ENV = read_cluster_conf_file $version, $cluster, 'environment', 1;
     # set LANG so non-ascii chars in the server log are not replaced by '?' (affected are non-session contexts)
     unless (exists $ENV{LANG}) {
 	my $lc_messages = PgCommon::get_conf_value $version, $cluster, 'postgresql.conf', 'lc_messages';
@@ -187,7 +187,7 @@ sub start {
 
     push @options, @pg_ctl_opts_from_cli if @pg_ctl_opts_from_cli;
 
-    my %pg_ctl_opts_from_file = read_cluster_conf_file $version, $cluster, 'pg_ctl.conf';
+    my %pg_ctl_opts_from_file = read_cluster_conf_file $version, $cluster, 'pg_ctl.conf', 1;
     push @options, split(' ', $pg_ctl_opts_from_file{'pg_ctl_options'})
 	if defined $pg_ctl_opts_from_file{'pg_ctl_options'} and $pg_ctl_opts_from_file{'pg_ctl_options'} ne '';
 
@@ -208,7 +208,9 @@ sub start {
             exit $exit;
         }
     } else {
-        setsid or error "could not start session: $!";
+        if (setsid() < 0) {
+            error "could not start session: $!";
+        }
         if ($info{'logfile'}) {
             my $fd = POSIX::open($info{'logfile'}, POSIX::O_WRONLY|POSIX::O_APPEND|POSIX::O_CREAT) or error "Could not open logfile $info{'logfile'}";
             dup2($fd, 1);
@@ -264,7 +266,7 @@ sub stop {
 
     push @options, @pg_ctl_opts_from_cli if @pg_ctl_opts_from_cli;
 
-    my %pg_ctl_opts_from_file = read_cluster_conf_file $version, $cluster, 'pg_ctl.conf';
+    my %pg_ctl_opts_from_file = read_cluster_conf_file $version, $cluster, 'pg_ctl.conf', 1;
     push @options, split(' ', $pg_ctl_opts_from_file{'pg_ctl_options'})
 	if defined $pg_ctl_opts_from_file{'pg_ctl_options'} and $pg_ctl_opts_from_file{'pg_ctl_options'} ne '';
 
@@ -312,6 +314,10 @@ sub promote {
     exec $pg_ctl, '-D', $info{'pgdata'}, '-s', @pg_ctl_opts_from_cli, 'promote';
 }
 
+sub logrotate {
+    exec $pg_ctl, '-D', $info{'pgdata'}, '-s', @pg_ctl_opts_from_cli, 'logrotate';
+}
+
 #
 # main
 #
@@ -339,7 +345,7 @@ if ($mode =~ /^(s(mart)?|f(ast)?|i(mmediate)?)$/) {
 # parse command
 my $version_re = qr/(\d+\.?\d)/;
 my $cluster_re = qr/([^'"\s]+)/;
-my $action_re = qr/(start|stop|restart|reload|status|promote)/;
+my $action_re = qr/(start|stop|restart|reload|status|promote|logrotate)/;
 my $action;
 
 if (@ARGV >= 3 and "$ARGV[0] $ARGV[1] $ARGV[2]" =~ /^$version_re $cluster_re $action_re$/) {
@@ -509,7 +515,7 @@ pg_ctlcluster - start/stop/restart/reload a PostgreSQL cluster
 
 B<pg_ctlcluster> [I<options>] I<cluster-version> I<cluster-name> I<action> [B<--> I<pg_ctl options>]
 
-where I<action> = B<start>|B<stop>|B<restart>|B<reload>|B<status>|B<promote>
+where I<action> = B<start>|B<stop>|B<restart>|B<reload>|B<status>|B<promote>|B<logrotate>
 
 =head1 DESCRIPTION
 
@@ -561,6 +567,10 @@ options that were used to invoke it are displayed.
 
 Commands a running standby server to exit recovery and begin read-write
 operations.
+
+=item B<logrotate>
+
+Requests that the server of a given cluster rotates the log file.
 
 =back
 

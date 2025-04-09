@@ -5,7 +5,7 @@ PgCommon - Common functions for the postgresql-common framework
 =head1 COPYRIGHT AND LICENSE
 
  (C) 2008-2009 Martin Pitt <mpitt@debian.org>
- (C) 2012-2022 Christoph Berg <myon@debian.org>
+ (C) 2012-2025 Christoph Berg <myon@debian.org>
 
 This program is free software; you can redistribute it and/or modify it
 under the terms of the GNU General Public License as published by the
@@ -36,8 +36,8 @@ our @EXPORT = qw/error user_cluster_map get_cluster_port set_cluster_port
     change_ugid system_or_error config_bool replace_v_c
     get_db_encoding get_db_locales get_cluster_locales get_cluster_controldata
     get_cluster_databases cluster_conf_filename read_cluster_conf_file
-    read_pg_hba read_pidfile valid_hba_method/;
-our @EXPORT_OK = qw/$confroot $binroot $rpm $have_python2
+    read_pg_hba read_pidfile valid_hba_method package_list/;
+our @EXPORT_OK = qw/$confroot $binroot $rpm
     quote_conf_value read_conf_file get_conf_value
     set_conf_value set_conffile_value disable_conffile_value disable_conf_value
     replace_conf_value cluster_data_directory get_file_device
@@ -57,12 +57,6 @@ sub error {
     die "Error: $_[0]\n";
 }
 
-=head2 prepare_exec, restore_exec
-
- Functions for configuration
-
-=cut
-
 our $confroot = '/etc/postgresql';
 if ($ENV{'PG_CLUSTER_CONF_ROOT'}) {
     ($confroot) = $ENV{'PG_CLUSTER_CONF_ROOT'} =~ /(.*)/; # untaint
@@ -77,14 +71,19 @@ our $binroot = "/usr/lib/postgresql/";
 our $rpm = 0;
 #redhat# $rpm = 1;
 our $defaultport = 5432;
-our $have_python2 = 0; # python2 removed in bullseye+
-#py2#$have_python2 = 1;
+
+=head2 prepare_exec, restore_exec
+
+ Untaint the environment for executing an external program
+
+ Optional arguments: list of additional variables
+
+=cut
 
 {
     my %saved_env;
 
     # untaint the environment for executing an external program
-    # Optional arguments: list of additional variables
     sub prepare_exec {
 	my @cleanvars = qw/PATH IFS ENV BASH_ENV CDPATH/;
 	push @cleanvars, @_;
@@ -95,7 +94,7 @@ our $have_python2 = 0; # python2 removed in bullseye+
 	    delete $ENV{$_};
 	}
 
-	$ENV{'PATH'} = '';
+	$ENV{'PATH'} = '/sbin:/bin:/usr/sbin:/usr/bin';
     }
 
     # restore the environment after prepare_exec()
@@ -165,19 +164,20 @@ sub replace_v_c ($$$) {
 =head2 read_conf_file
 
  Read a 'var = value' style configuration file and return a hash with the
- values. Error out if the file cannot be read.
+ values. When missing_ok is not set, error out if the file is not present.
+ Syntax errors are fatal in any case.
 
  If the file name ends with '.conf', the keys will be normalized to
  lower case (suitable for e.g. postgresql.conf), otherwise kept intact
  (suitable for environment).
 
- Arguments: <path>
+ Arguments: <path> <missing_ok>
  Returns: hash (empty if file does not exist)
 
 =cut
 
 sub read_conf_file {
-    my ($config_path) = @_;
+    my ($config_path, $missing_ok) = @_;
     my %conf;
     local (*F);
 
@@ -203,17 +203,18 @@ sub read_conf_file {
                 opendir($dir, $absolute_path) or next;
                 foreach my $filename (sort readdir($dir) ) {
                     next if ($filename =~ m/^\./ or not $filename =~/\.conf$/ );
-                    my %include_conf = read_conf_file("$absolute_path/$filename");
+                    my %include_conf = read_conf_file("$absolute_path/$filename", $missing_ok);
                     while ( my ($k, $v) = each(%include_conf) ) {
                         $conf{$k} = $v;
                     }
                 }
                 closedir($dir);
-            } elsif (/^\s*include(?:_if_exists)?\s*=?\s*'([^']+)'\s*(?:#.*)?$/i) {
+            } elsif (/^\s*include(_if_exists)?\s*=?\s*'([^']+)'\s*(?:#.*)?$/i) {
                 # read included file and merge into %conf
-                my $path = $1;
+                my $missing_include_ok = $1 ? 1 : $missing_ok;
+                my $path = $2;
                 my $absolute_path = get_absolute_path($path, $config_path);
-                my %include_conf = read_conf_file($absolute_path);
+                my %include_conf = read_conf_file($absolute_path, $missing_include_ok);
                 while ( my ($k, $v) = each(%include_conf) ) {
                     $conf{$k} = $v;
                 }
@@ -237,6 +238,8 @@ sub read_conf_file {
             }
         }
         close F;
+    } else {
+        error "could not open $config_path" unless ($missing_ok);
     }
 
     return %conf;
@@ -270,19 +273,20 @@ sub cluster_conf_filename {
 
 Read a 'var = value' style configuration file from a cluster configuration
 
-Arguments: <version> <cluster> <config file name>
+Arguments: <version> <cluster> <config file name> <missing_ok>
 Returns: hash (empty if the file does not exist)
 
 =cut
 
 sub read_cluster_conf_file {
-    my ($version, $cluster, $configfile) = @_;
-    my %conf = read_conf_file(cluster_conf_filename($version, $cluster, $configfile));
+    my ($version, $cluster, $configfile, $missing_ok) = @_;
+    my %conf = read_conf_file(cluster_conf_filename($version, $cluster, $configfile), $missing_ok);
 
-    if ($version >= 9.4 and $configfile eq 'postgresql.conf') { # merge settings changed by ALTER SYSTEM
+    if (%conf and $version >= 9.4 and $configfile eq 'postgresql.conf') { # merge settings changed by ALTER SYSTEM
         # data_directory cannot be changed by ALTER SYSTEM
         my $data_directory = cluster_data_directory($version, $cluster, \%conf);
-        my %auto_conf = read_conf_file "$data_directory/postgresql.auto.conf";
+        # allow auto.conf to be missing; happens during early pg_upgradecluster when data_directory is still pointing to the old cluster
+        my %auto_conf = read_conf_file "$data_directory/postgresql.auto.conf", 1;
         foreach my $guc (keys %auto_conf) {
             next if ($guc eq 'data_directory'); # defend against pg_upgradecluster bug in 200..202
             $conf{$guc} = $auto_conf{$guc};
@@ -303,7 +307,7 @@ sub read_cluster_conf_file {
 =cut
 
 sub get_conf_value {
-    my %conf = (read_cluster_conf_file $_[0], $_[1], $_[2]);
+    my %conf = (read_cluster_conf_file $_[0], $_[1], $_[2], 1);
     return $conf{$_[3]};
 }
 
@@ -328,8 +332,7 @@ sub set_conffile_value {
     my $found = 0;
     # first, search for an uncommented setting
     for (my $i=0; $i <= $#lines; ++$i) {
-	if ($lines[$i] =~ /^\s*($key)(\s*(?:=|\s)\s*)\w+\b((?:\s*#.*)?)/i or
-	    $lines[$i] =~ /^\s*($key)(\s*(?:=|\s)\s*)'[^']*'((?:\s*#.*)?)/i) {
+	if ($lines[$i] =~ /^\s*($key)(\s*(?:=|\s)\s*)(?:[^'\s]+|'[^']*')((?:\s*#.*)?)$/i) {
 	    $lines[$i] = "$1$2$value$3\n";
 	    $found = 1;
 	    last;
@@ -340,8 +343,7 @@ sub set_conffile_value {
     # of appending
     if (!$found) {
 	for (my $i=0; $i <= $#lines; ++$i) {
-	    if ($lines[$i] =~ /^\s*#\s*($key)(\s*(?:=|\s)\s*)\w+\b((?:\s*#.*)?)$/i or
-		$lines[$i] =~ /^\s*#\s*($key)(\s*(?:=|\s)\s*)'[^']*'((?:\s*#.*)?)$/i) {
+	    if ($lines[$i] =~ /^\s*#\s*($key)(\s*(?:=|\s)\s*)(?:[^'\s]+|'[^']*')((?:\s*#.*)?)$/i) {
 		$lines[$i] = "$1$2$value$3\n";
 		$found = 1;
 		last;
@@ -867,8 +869,9 @@ sub cluster_info {
     my %result;
     $result{'configdir'} = "$confroot/$v/$c";
     $result{'configuid'} = (stat "$result{configdir}/postgresql.conf")[4];
+    $result{'configfile'} = "$confroot/$v/$c/postgresql.conf";
 
-    my %postgresql_conf = read_cluster_conf_file $v, $c, 'postgresql.conf';
+    my %postgresql_conf = read_cluster_conf_file $v, $c, 'postgresql.conf', 1;
     $result{'config'} = \%postgresql_conf;
     $result{'pgdata'} = cluster_data_directory $v, $c, \%postgresql_conf;
     return %result unless (keys %postgresql_conf);
@@ -1347,7 +1350,9 @@ sub get_db_encoding {
  owner. (For versions >= 8.4; for older versions use get_cluster_locales()).
 
  Arguments: <version> <cluster> <database>
- Returns: (LC_CTYPE, LC_COLLATE) or (undef,undef) if it cannot be determined.
+ Returns: (LC_CTYPE, LC_COLLATE, locprovider, iculocale, icurules) or undef if it cannot be determined.
+ PG15 adds locale provider and icu locale to the returned values
+ PG16 adds icu rules
 
 =cut
 
@@ -1357,31 +1362,32 @@ sub get_db_locales {
     my $socketdir = get_cluster_socketdir $version, $cluster;
     my $psql = get_program_path 'psql', $version;
     return undef unless ($port && $socketdir && $psql);
-    my ($ctype, $collate);
+    my ($ctype, $collate, $locale_provider, $icu_locale, $icu_rules);
 
     # try to switch to cluster owner
     prepare_exec 'LC_ALL';
     $ENV{'LC_ALL'} = 'C';
     my $orig_euid = $>;
     $> = (stat (cluster_data_directory $version, $cluster))[4];
+
+    my $datlocprovider = $version >= 15 ? "CASE datlocprovider::text WHEN 'c' THEN 'libc' WHEN 'i' THEN 'icu' WHEN 'b' THEN 'builtin' END" : "NULL";
+    my $daticulocale = ($version >= 15 and $version < 17) ? "daticulocale" : "NULL";
+    my $daticurules = $version >= 16 ? "daticurules" : "NULL";
+
     open PSQL, '-|', $psql, '-h', $socketdir, '-p', $port, '-AXtc',
-        'SHOW lc_ctype', $db or
-        die "Internal error: could not call $psql to determine db lc_ctype: $!";
-    my $out = <PSQL> // error 'could not determine db lc_ctype';
+        "SELECT datctype, datcollate, $datlocprovider, $daticulocale, $daticurules FROM pg_database where datname = current_database()", $db or
+        die "Internal error: could not call $psql to determine datctype and datcollate: $!";
+    my $out = <PSQL> // error 'could not determine datctype and datcollate';
     close PSQL;
-    ($ctype) = $out =~ /^([\w.\@-]+)$/; # untaint
-    open PSQL, '-|', $psql, '-h', $socketdir, '-p', $port, '-AXtc',
-        'SHOW lc_collate', $db or
-        die "Internal error: could not call $psql to determine db lc_collate: $!";
-    $out = <PSQL> // error 'could not determine db lc_collate';
-    close PSQL;
-    ($collate) = $out =~ /^([\w.\@-]+)$/; # untaint
+    ($out) = $out =~ /^(.*)$/; # untaint
+    ($ctype, $collate, $locale_provider, $icu_locale, $icu_rules) = split /\|/, $out;
+
     $> = $orig_euid;
     restore_exec;
     chomp $ctype;
     chomp $collate;
-    return ($ctype, $collate) unless $?;
-    return (undef, undef);
+    return ($ctype, $collate, $locale_provider, $icu_locale, $icu_rules) unless $?;
+    return (undef, undef, undef, undef, undef);
 }
 
 
@@ -1660,6 +1666,28 @@ sub valid_hba_method {
     my %valid_methods = qw/trust 1 reject 1 md5 1 crypt 1 password 1 krb5 1 ident 1 pam 1/;
 
     return exists($valid_methods{$method});
+}
+
+=head2 package_list
+
+ Arguments: pattern for dpkg -l
+ Returns: list of packages matching pattern
+
+=cut
+
+sub package_list($) {
+    my $pattern = shift;
+
+    my @packages;
+
+    open (my $fh, '-|', 'dpkg', '-l', $pattern) or error "could not read list of packages";
+    while (<$fh>) {
+        next unless (/^ii\s+(\S+)/);
+        push @packages, $1;
+    }
+    close $fh;
+
+    return @packages;
 }
 
 1;

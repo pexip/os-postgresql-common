@@ -14,8 +14,8 @@ if ($PgCommon::rpm) {
 }
 
 # when invoked from the postgresql-NN package tests, postgresql-server-dev-all is not installed
-if (! -x '/usr/bin/dh_make_pgxs') {
-    pass "Skipping pg_buildext tests, /usr/bin/dh_make_pgxs is not installed";
+unless (deb_installed "postgresql-server-dev-all") {
+    pass "Skipping pg_buildext tests, postgresql-server-dev-all is not installed";
     done_testing();
     exit;
 }
@@ -36,16 +36,17 @@ if ($ENV{PG_VERSIONS}) {
 my @versions = split /\s+/, `/usr/share/postgresql-common/supported-versions`;
 
 # prepare build environment
-chdir 't/foo';
-chmod 0777, '.', 'foo-123';
+chmod 0777, 't/foo', 't/foo/foo-123', 't/bar/debian';
 umask 0022;
+chdir 't/foo';
 
 program_ok 0, 'make clean';
 program_ok 'nobody', 'make tar';
 program_ok 'nobody', 'cd foo-123 && echo y | EDITOR=true dh_make_pgxs';
 
 note "testing 'dh --with pgxs'";
-program_ok 'nobody', 'cd foo-123 && DEB_BUILD_OPTIONS=nocheck dpkg-buildpackage -us -uc';
+# Use -Ppkg.postgresql.32-bit so we don't have to bother with architecture-is-64-bit here
+program_ok 'nobody', 'cd foo-123 && DEB_BUILD_OPTIONS=nocheck dpkg-buildpackage -us -uc -Ppkg.postgresql.32-bit';
 
 foreach my $ver (@versions) {
     my $deb = "postgresql-$ver-foo_123-1_$arch.deb";
@@ -54,13 +55,14 @@ foreach my $ver (@versions) {
         my $have_extension_destdir = `grep extension_destdir /usr/share/postgresql/$ver/postgresql.conf.sample`;
         skip "No in-tree installcheck on PG $ver (missing extension_destdir)", 2 unless ($have_extension_destdir);
         like_program_out 'nobody', "cd foo-123 && PG_SUPPORTED_VERSIONS=$ver dh_pgxs_test",
-            0, qr/PostgreSQL $ver installcheck.*test foo * \.\.\. ok/s;
+            0, qr/PostgreSQL $ver installcheck.*(test foo * \.\.\. ok|ok 1 * - foo)/s; # old/new PG 16 syntax
     }
     program_ok 0, "dpkg -i $deb";
     like_program_out 'nobody', "cd foo-123 && pg_buildext installcheck",
-        0, qr/PostgreSQL $ver installcheck.*test foo * \.\.\. ok/s;
+        0, qr/PostgreSQL $ver installcheck.*(test foo * \.\.\. ok|ok 1 * - foo)/s;
     like_program_out 'nobody', "cd foo-123 && echo 'SELECT 3*41, version()' | pg_buildext psql", 0, qr/123.*PostgreSQL $ver/;
     like_program_out 'nobody', "cd foo-123 && echo 'echo --\$PGVERSION--' | pg_buildext virtualenv", 0, qr/--$ver--/;
+    like_program_out 'nobody', "cd foo-123 && pg_buildext run echo --%v--", 0, qr/--$ver--/;
     program_ok 0, "dpkg -r postgresql-$ver-foo";
 }
 
@@ -68,7 +70,7 @@ note "testing 'dh --with pgxs_loop'";
 system "rm -f postgresql-*.deb";
 
 program_ok 'nobody', 'sed -i -e s/pgxs/pgxs_loop/ foo-123/debian/rules';
-program_ok 'nobody', 'cd foo-123 && DEB_BUILD_OPTIONS=nocheck dpkg-buildpackage -us -uc';
+program_ok 'nobody', 'cd foo-123 && DEB_BUILD_OPTIONS=nocheck dpkg-buildpackage -us -uc -Ppkg.postgresql.32-bit';
 
 foreach my $ver (@versions) {
     my $deb = "postgresql-$ver-foo_123-1_$arch.deb";
@@ -76,6 +78,27 @@ foreach my $ver (@versions) {
 }
 
 program_ok 'nobody', 'make clean';
+
+note "testing pg_buildext updatecontrol";
+chdir '../bar';
+program_ok 'nobody', 'PG_SUPPORTED_VERSIONS="0.9 1.0 1.1 2 3" pg_buildext updatecontrol';
+is `cat debian/control`, "Source: bar
+Build-Depends: whatever, postgresql-1.0-moo (>= 1), postgresql-1.1-moo (>= 1), postgresql-2-moo (>= 1), more,
+ postgresql-2-new,
+ postgresql-1.0, postgresql-1.1, postgresql-2
+
+Package: postgresql-1.0-bar
+Architecture: some
+Depends: postgresql-1.0-moo
+
+Package: postgresql-1.1-bar
+Architecture: some
+Depends: postgresql-1.1-moo
+
+Package: postgresql-2-bar
+Architecture: some
+Depends: postgresql-2-moo
+", "PGVERSION and PGVERSIONS were correctly replaced";
 
 done_testing();
 

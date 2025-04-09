@@ -2,7 +2,7 @@
 
 # pg_restorecluster: restore from a pg_backupcluster backup
 #
-# Copyright (C) 2021 Christoph Berg <myon@debian.org>
+# Copyright (C) 2021-2024 Christoph Berg <myon@debian.org>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -39,8 +39,7 @@ Options:
 ";
 }
 
-my $createclusterconf = "$PgCommon::common_confdir/createcluster.conf";
-my ($datadir, $port, $start, $recovery_target_time, $archive_recovery, $wal_archive);
+my ($datadir, $port, $start, $recovery_target_time, $archive_recovery, $wal_archive, $createclusterconf);
 
 exit 1 unless GetOptions (
     'd|datadir=s' => \$datadir,
@@ -72,7 +71,7 @@ if (@ARGV >= 2 and $ARGV[0] =~ m!^(\d+\.?\d)[-/]([^/]+)$!) {
 
 error "cluster $version $cluster already exists" if cluster_exists $version, $cluster;
 
-my %defaultconf = PgCommon::read_conf_file ($createclusterconf);
+my %defaultconf = PgCommon::read_conf_file ($createclusterconf // "$PgCommon::common_confdir/createcluster.conf", not $createclusterconf);
 
 # functions to be run as root
 
@@ -109,6 +108,7 @@ sub create_cluster($$$$$) {
         "--datadir", $datadir,
         "--user", $owneruid, "--group", $ownergid,
         $version, $cluster,
+        "--",
         @createclusteropts;
 }
 
@@ -159,7 +159,7 @@ sub update_config($$$) {
     );
     $settings{cluster_name} = "$version/$cluster" if ($version >= 9.5);
     $settings{stats_temp_directory} = "/var/run/postgresql/$version-$cluster.pg_stat_tmp" if ($version < 15);
-    my %config = PgCommon::read_conf_file("$configdir/postgresql.conf");
+    my %config = PgCommon::read_conf_file("$configdir/postgresql.conf", 0);
     for my $guc (sort keys %settings) {
         if (not exists $config{$guc} or $config{$guc} ne $settings{$guc}) {
             print "Setting $guc = $settings{$guc}\n";
@@ -242,13 +242,6 @@ sub restore_globals($$) {
     error "psql failed" if ($?);
 }
 
-sub create_databases($) {
-    my ($backup) = @_;
-
-    print "Creating databases from $backup/databases.sql ...\n";
-    system_or_error "psql", "--cluster", "$version/$cluster", "-vON_ERROR_STOP=1", "-Xqf", "$backup/databases.sql";
-}
-
 sub restore_dumps($) {
     my ($backup) = @_;
 
@@ -257,7 +250,8 @@ sub restore_dumps($) {
         $dump = $1; # untaint
         my $db = $2;
         print "Restoring $dump to database $db ...\n";
-        system_or_error "pg_restore", "--cluster", "$version/$cluster", "-d", $db, $dump;
+        my @create = ($db eq "postgres" or $db eq "template1") ? () : ("--create");
+        system_or_error "pg_restore", "--cluster", "$version/$cluster", @create, "-d", "postgres", $dump;
     }
 }
 
@@ -338,7 +332,6 @@ if ($backup =~ /\.backup$/) {
     start_cluster();
     switch_to_cluster_owner($owneruid, $ownergid);
     restore_globals($backup, $owneruid);
-    create_databases($backup);
     restore_dumps($backup);
     analyze();
     print "\n";
