@@ -2,7 +2,7 @@
 
 # simple pg_basebackup front-end
 #
-# Copyright (C) 2021 Christoph Berg <myon@debian.org>
+# Copyright (C) 2021-2025 Christoph Berg <myon@debian.org>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -16,7 +16,7 @@
 
 use strict;
 use warnings;
-use Fcntl qw(LOCK_EX);
+use Fcntl qw(:flock);
 use Getopt::Long;
 use JSON;
 use PgCommon;
@@ -30,31 +30,44 @@ delete @ENV{'IFS', 'CDPATH', 'ENV', 'BASH_ENV'};
 chdir '/';
 umask 027;
 
-sub help () {
+sub help ($) {
     print "Syntax: $0 [options] <version> <cluster> <action>
 Actions:
-  createdirectory        Create /var/backups/version-cluster
+  createdirectory        Create /var/backups/postgresql/version-cluster
   basebackup             Backup using pg_basebackup
   dump                   Backup using pg_dump
   expiredumps <N>        Remove all but last N dumps
   expirebasebackups <N>  Remove all but last N basebackups
+  deletebroken           Remove broken backups
+
   receivewal             Launch pg_receivewal
   compresswal            Compress WAL files in archive
   archivecleanup         Remove obsolete WAL files from archive
+
   list                   Show dumps, basebackups, and WAL
 Options:
-  -k --keep-on-error     Keep faulty backup directory on error
+  -c --checkpoint <spread|fast>  Passed to pg_basebackup
+  -k --keep-on-error     Keep broken backup directory on error
   -v --verbose           Verbose output
+  -Z --compress=level    Passed to pg_dump, pg_basebackup and pg_receivewal
 ";
+    exit (shift);
 }
 
+my $checkpoint = 'spread';
 my $keep_on_error;
 my $verbose;
+my $compress;
 
-exit 1 unless GetOptions (
+unless (GetOptions (
+    'c|checkpoint=s' => sub { $checkpoint = $_[1] =~ /^f/ ? "fast" : "spread" },
     'k|keep-on-error' => \$keep_on_error,
     'v|verbose' => \$verbose,
-);
+    'Z|compress=s' => sub { ($compress) = $_[1] =~ /([\w\d:-]+)/; }, # untaint
+    'help' => sub { help(0); },
+)) {
+    help(1);
+}
 
 $verbose = 1 if (-t 1); # verbose output when running on terminal
 
@@ -68,8 +81,7 @@ if (@ARGV >= 2 and $ARGV[0] =~ m!^(\d+\.?\d)[-/]([^/]+)$!) {
     shift @ARGV;
     shift @ARGV;
 } else {
-    help();
-    exit 1;
+    help(1);
 }
 my $action = $ARGV[0];
 
@@ -81,6 +93,7 @@ validate_cluster_owner \%info;
 my $rootdir = "/var/backups/postgresql";
 my $clusterdir = "$rootdir/$version-$cluster";
 my $waldir = "$clusterdir/wal";
+my $backupdirfh; # global so it doesn't get deallocated
 
 # functions to be run as root
 
@@ -101,13 +114,33 @@ sub switch_to_cluster_owner() {
     change_ugid $info{owneruid}, $info{ownergid};
 }
 
+# helper functions
+
+sub can_lock_dir($) {
+    my ($dir) = @_;
+
+    open my $dirfh, $dir or error "could not open $dir";
+    my $ret = flock $dirfh, LOCK_SH | LOCK_NB;
+    flock $dirfh, LOCK_UN;
+    close $dirfh;
+
+    return $ret;
+}
+
 # backup functions
 
-sub get_backupdir($) {
-    my $suffix = shift;
-    my $timestamp = strftime("%FT%H%M%SZ", gmtime);
+sub get_backupdir($$) {
+    my ($starttime, $suffix) = @_;
+
+    my $timestamp = strftime("%FT%H%M%SZ", gmtime($starttime));
     my $backupdir = "$clusterdir/$timestamp.$suffix";
     error "$backupdir already exists" if (-d $backupdir);
+    mkdir($backupdir, 0700) or error "mkdir $backupdir: $!";
+
+    # lock the directory to signal backup is running
+    open $backupdirfh, $backupdir;
+    flock $backupdirfh, LOCK_EX or error "flock $backupdir: $!";
+
     print "Creating $suffix in $backupdir\n" if ($verbose);
     return $backupdir;
 }
@@ -125,64 +158,57 @@ sub remove_backup_on_error($) {
 sub create_basebackup($) {
     my $backupdir = shift;
 
-    system_or_error "pg_basebackup",
+    my @cmd = ("pg_basebackup",
         "--cluster", "$version/$cluster",
         "--verbose",
-        (-t 2 ? "--progress" : ()),
-        "--format", "tar", "--gzip",
-        ($version < 10 ? "--xlog" : ()),
-        "-D", $backupdir;
+        "--checkpoint=$checkpoint",
+        "--format=tar");
+    if ($compress) {
+        push @cmd, "--compress=$compress";
+    } else {
+        push @cmd, "--gzip";
+    }
+    push @cmd, "--xlog" if ($version < 10);
+    push @cmd, "--progress" if (-t 2);
+    push @cmd, "-D", $backupdir;
+    system_or_error @cmd;
 }
 
 sub create_dumpall($) {
     my $backupdir = shift;
-    mkdir($backupdir, 0750) or error "mkdir $backupdir: $!";
 
-    my $clusterquery = "SELECT concat(
-  format('--encoding %s --lc-collate %s --lc-ctype %s', pg_catalog.pg_encoding_to_char(encoding), datcollate, datctype),
-  CASE WHEN current_setting('data_checksums')::boolean THEN ' -- --data-checksums' END)
+    my $icu = "";
+    if ($version >= 15) {
+        $icu = "CASE datlocprovider::text
+            WHEN 'c' THEN '--locale-provider libc'
+            WHEN 'b' THEN '--locale-provider builtin'
+            WHEN 'i' THEN '--locale-provider icu'";
+        if ($version < 17) {
+            $icu .= " || ' --icu-locale ' || daticulocale";
+        }
+        if ($version >= 16) {
+            $icu .= " || ' --icu-rules ' || daticurules";
+        }
+        $icu .= "\nEND,";
+    }
+    my $clusterquery = "SELECT
+  '--encoding', pg_catalog.pg_encoding_to_char(encoding),
+  '--lc-collate', datcollate,
+  '--lc-ctype', datctype,
+  $icu
+  CASE WHEN current_setting('data_checksums')::boolean THEN '--data-checksums'
+  WHEN current_setting('server_version_num')::int >= 180000 THEN '--no-data-checksums'
+  END
 FROM pg_database WHERE datname = 'template0'";
     system_or_error "psql",
         "--cluster", "$version/$cluster",
-        "-XAtc", $clusterquery,
+        "-XAtF", " ", "-c", $clusterquery,
         "-o", "$backupdir/createcluster.opts";
 
     system_or_error "pg_dumpall",
         "--cluster", "$version/$cluster",
         "--globals-only",
         "--file", "$backupdir/globals.sql";
-
-    my $dbquery = "/* database creation */
-SELECT
-  format('CREATE DATABASE %I WITH OWNER = %I TEMPLATE = template0 ENCODING = %L LC_COLLATE %L LC_CTYPE %L;', datname, rolname, pg_encoding_to_char(encoding), datcollate, datctype) AS command
-FROM pg_database
-LEFT JOIN pg_roles r ON r.oid = datdba
-WHERE datallowconn AND datname NOT IN ('postgres', 'template1')
-
-UNION ALL
-
-/* database options */
-SELECT
-  CASE
-    WHEN rolname IS NULL THEN format('ALTER DATABASE %I', datname)
-    ELSE format('ALTER ROLE %I IN DATABASE %I', rolname, datname)
-  END ||
-  format(' SET %I = ', match[1]) ||
-  CASE
-    WHEN match[1] IN ('local_preload_libraries', 'search_path', 'session_preload_libraries', 'shared_preload_libraries', 'temp_tablespaces', 'unix_socket_directories')
-    THEN match[2]
-    ELSE quote_literal(match[2])
-  END ||
-  ';' AS command
-FROM pg_db_role_setting s
-JOIN pg_database d ON d.oid = setdatabase
-LEFT JOIN pg_roles r ON r.oid = setrole,
-unnest(setconfig) u(setting),
-regexp_matches(setting, '(.+)=(.+)') m(match)";
-    system_or_error "psql",
-        "--cluster", "$version/$cluster",
-        "-XAtc", $dbquery,
-        "-o", "$backupdir/databases.sql";
 
     my $dblist = 'SELECT datname FROM pg_database WHERE datallowconn ORDER BY datname';
     my $databases = `psql --cluster '$version/$cluster' -XAtc '$dblist'`;
@@ -192,6 +218,7 @@ regexp_matches(setting, '(.+)=(.+)') m(match)";
             "--cluster", "$version/$cluster",
             "--format=custom",
             "--file", "$backupdir/$datname.dump",
+            ($compress ? "--compress=$compress" : ()),
             $datname;
     }
 }
@@ -212,15 +239,38 @@ sub create_status($$$$) {
     my $statusjson = {
         cluster => $cluster,
         duration => $endtime - $starttime,
-        end => scalar(gmtime($endtime)),
-        start => scalar(gmtime($starttime)),
+        end => strftime("%FT%H%M%SZ", gmtime($endtime)),
+        start => strftime("%FT%H%M%SZ", gmtime($starttime)),
         status => $status,
         type => $type,
         version => $version,
     };
+    if (my $hostname = `hostname`) {
+        chomp $hostname;
+        $statusjson->{hostname} = $hostname;
+    }
+    if (-e '/etc/machine-id') {
+        open my $fh, '/etc/machine-id';
+        my $machine_id = <$fh>;
+        close $fh;
+        if ($machine_id) {
+            chomp $machine_id;
+            $statusjson->{'machine-id'} = $machine_id;
+        }
+    }
+    if (-e '/etc/machine-info') {
+        open my $fh, '/etc/machine-info';
+        while (<$fh>) {
+            if (/^DEPLOYMENT=(.*)/) {
+                $statusjson->{'machine-deployment'} = $1;
+            }
+        }
+        close $fh;
+    }
 
+    my $json = JSON->new->canonical;
     open F, '>', $statusfile or error "$statusfile: $!";
-    print F encode_json($statusjson) . "\n" or error "$statusfile: $!";
+    print F $json->encode($statusjson) . "\n" or error "$statusfile: $!";
     close F or error "$$statusfile: $!";
 }
 
@@ -235,12 +285,12 @@ sub expire_backups($$) {
     my $found = 0;
     for my $backup (reverse @backups) {
         # iterate reversely over backups until we have found enough valid ones
-        if ($found >= $number) {
+        if ($found >= $number and can_lock_dir($backup)) {
             print "Removing $backup ...\n" if ($verbose);
             $backup =~ /(.*)/; # untaint
             system_or_error "rm", "-rf", $1;
         } else {
-            if (-f "$backup/status") {
+            if (-f "$backup/status" and can_lock_dir($backup)) {
                 $found++;
             }
         }
@@ -250,7 +300,7 @@ sub expire_backups($$) {
 sub delete_broken() {
     my @backups = (glob("$clusterdir/*.backup"), glob("$clusterdir/*.dump"));
     for my $backup (@backups) {
-        if (! -f "$backup/status") {
+        if (! -f "$backup/status" and can_lock_dir($backup)) {
             print "Removing $backup ...\n" if ($verbose);
             $backup =~ /(.*)/; # untaint
             system_or_error "rm", "-rf", $1;
@@ -276,7 +326,11 @@ sub receivewal() {
     $ENV{PGAPPNAME} = "pg_receivewal\@$version-$cluster.service";
     my @cmd = ($pg_receivewal, "--cluster", "$version/$cluster",
         "-D", $waldir, "--slot", "pg_receivewal_service");
-    push @cmd, "--compress=5" if ($version >= 10);
+    if ($compress) {
+        push @cmd, "--compress=$compress";
+    } elsif ($version >= 10) {
+        push @cmd, "--compress=5";
+    }
     exec {$pg_receivewal} @cmd or error "exec $pg_receivewal: $!";
 }
 
@@ -335,20 +389,32 @@ sub dirsize($) {
     return $size, $files;
 }
 
+sub get_status($) {
+    my ($dir) = @_;
+
+    # if status is present, the backup is ok
+    return "" if (-f "$dir/status");
+
+    # if we can get the lock, the backup failed
+    return " BROKEN" if (can_lock_dir($dir));
+
+    return " RUNNING";
+}
+
 sub list() {
     print "Cluster $version $cluster backups in $clusterdir:\n";
     my $totalsize = 0;
     print "Dumps:\n";
     for my $dir (sort glob "$clusterdir/*.dump") {
         my ($size, $files) = dirsize($dir);
-        my $status = -f "$dir/status" ? '' : ' BROKEN';
+        my $status = get_status($dir);
         print "  $dir: $size Bytes$status\n";
         $totalsize += $size;
     }
     print "Basebackups:\n";
     for my $dir (sort glob "$clusterdir/*.backup") {
         my ($size, $files) = dirsize($dir);
-        my $status = -f "$dir/status" ? '' : ' BROKEN';
+        my $status = get_status($dir);
         print "  $dir: $size Bytes$status\n";
         $totalsize += $size;
     }
@@ -371,7 +437,7 @@ if ($action eq 'createdirectory') {
     my $starttime = time;
     create_directory();
     switch_to_cluster_owner();
-    my $backupdir = get_backupdir('backup');
+    my $backupdir = get_backupdir($starttime, 'backup');
     $SIG{__DIE__} = sub { remove_backup_on_error($backupdir) };
     create_basebackup($backupdir);
     create_configbackup($backupdir);
@@ -385,7 +451,7 @@ if ($action eq 'createdirectory') {
     my $starttime = time;
     create_directory();
     switch_to_cluster_owner();
-    my $backupdir = get_backupdir('dump');
+    my $backupdir = get_backupdir($starttime, 'dump');
     $SIG{__DIE__} = sub { remove_backup_on_error($backupdir) };
     create_dumpall($backupdir);
     create_configbackup($backupdir);
@@ -428,8 +494,7 @@ if ($action eq 'createdirectory') {
     list();
 
 } else {
-    help();
-    exit(1);
+    help(1);
 }
 
 __END__
@@ -456,7 +521,7 @@ To ease integration with B<systemd> operation, the alternative syntax
 
 =item B<createdirectory>
 
-Create /var/backups and /var/backups/I<version>-I<cluster>.
+Create /var/backups/postgresql and /var/backups/postgresql/I<version>-I<cluster>.
 This action can be run as root to create the directories required for backups.
 All other actions will also attempt to create the directories when missing, but
 can of course only do that when running as root. They will switch to the
@@ -481,6 +546,10 @@ Remove all but last the I<N> basebackups.
 
 Remove all but last the I<N> dumps.
 
+=item B<deletebroken>
+
+Remove all broken backups.
+
 =item B<receivewal>
 
 Launch pg_receivewal. WAL files are gzip-compressed in PG 10+.
@@ -503,13 +572,23 @@ Show dumps, basebackups, and WAL, with size.
 
 =over 4
 
+=item B<-c --checkpoint=spread|fast>
+
+Passed to B<pg_basebackup>. Default is B<spread>.
+
 =item B<-k --keep-on-error>
 
-Keep faulty backup directory on error. By default backups are delete on error.
+Keep broken backup directory on error. By default backups are deleted on error.
+Broken backups can be cleaned up using the B<deletebroken> action.
 
 =item B<-v --verbose>
 
 Verbose output, even when not running on a terminal.
+
+=item B<-Z> I<level> B<--compress=>I<level>
+
+Passed to B<pg_dump>, B<pg_basebackup> and B<pg_receivewal>.
+Default is pg_dump's default compression, B<gzip> for pg_basebackup, and B<5> for pg_receivewal.
 
 =back
 
@@ -517,15 +596,15 @@ Verbose output, even when not running on a terminal.
 
 =over 4
 
-=item /var/backups
+=item /var/backups/postgresql
 
 Default root directory for cluster backup directories.
 
-=item /var/backups/I<version>-I<cluster>
+=item /var/backups/postgresql/I<version>-I<cluster>
 
 Default directory for cluster backups.
 
-=item /var/backups/I<version>-I<cluster>/I<timestamp>B<.basebackup>
+=item /var/backups/postgresql/I<version>-I<cluster>/I<timestamp>B<.basebackup>
 
 Backup from B<pg_backupcluster ... basebackup>.
 
@@ -546,7 +625,7 @@ Completion timestamp of backup run.
 
 =back
 
-=item /var/backups/I<version>-I<cluster>/I<timestamp>B<.dump>
+=item /var/backups/postgresql/I<version>-I<cluster>/I<timestamp>B<.dump>
 
 Backup from B<pg_backupcluster ... dump>.
 
@@ -580,7 +659,7 @@ Completion timestamp of backup run.
 
 =back
 
-=item /var/backups/I<version>-I<cluster>/B<wal>
+=item /var/backups/postgresql/I<version>-I<cluster>/B<wal>
 
 WAL files from B<pg_receivewal>.
 

@@ -1,3 +1,319 @@
+postgresql-common (277) unstable; urgency=medium
+
+  * Updated ro translation by Remus-Gabriel Chelu, thanks! (Closes: #1101817)
+  * server/postgresql.mk: Build PG18 with liburing.
+
+ -- Christoph Berg <myon@debian.org>  Wed, 09 Apr 2025 12:17:57 +0200
+
+postgresql-common (276) unstable; urgency=medium
+
+  * pg_upgradecluster: Use --missing-stats-only in analyze hook for PG18+.
+  * pg_virtualenv: Use PG18's extension_control_path to find extensions in
+    temporary build paths instead of our custom extension_destdir patch.
+  * pg_buildext: Export $PG_CONFIG in all modes.
+  * Fix "should we build with LLVM support" detection on PG18+.
+  * Remove test-with-jit.conf, wasn't really exercised anyway.
+  * Updated es translation by Camaleón, thanks! (Closes: #1098284)
+  * Updated tr translation by Atila Koç, thanks! (Closes: #1101161)
+  * Updated pt_BR translation by Paulo Henrique de Lima Santana, thanks!
+    (Closes: #1098442)
+
+ -- Christoph Berg <myon@debian.org>  Mon, 31 Mar 2025 15:10:15 +0200
+
+postgresql-common (275) unstable; urgency=medium
+
+  [ Christoph Berg ]
+  * postgresql.mk: Enable --with-libcurl in PG18; ship llvmjit.so in new -jit
+    package.
+  * t/TestLib.pm check_clean: Sleep and retry on failure. (Closes: #1099815)
+  * Updated nl translation by Frans Spiesschaert, thanks! (Closes: #1099468)
+  * Updated de translation by Hermann-Josef Beckers, thanks! (Closes: #1099529)
+
+  [ Michael Banck ]
+  * pg_lsclusters: Warn if postgresql.conf is not readable.
+
+ -- Christoph Berg <myon@debian.org>  Tue, 18 Mar 2025 16:37:57 +0100
+
+postgresql-common (274) unstable; urgency=medium
+
+  * PgCommon.pm read_conf_file: Propagate missing_ok to included files.
+  * Move pgdg-keyring conflicts to postgresql-client-common where the files
+    are located now.
+
+ -- Christoph Berg <myon@debian.org>  Thu, 20 Feb 2025 11:52:38 +0100
+
+postgresql-common (273) unstable; urgency=medium
+
+  * Temporarily remove dependency on "make" until the dependency from
+    postgresql-common on postgresql-common-dev is removed for the PG18
+    transititon.
+
+ -- Christoph Berg <myon@debian.org>  Fri, 14 Feb 2025 15:03:16 +0100
+
+postgresql-common (272) unstable; urgency=medium
+
+  * Move libipc-run-perl dependency to postgresql-common-dev.
+
+ -- Christoph Berg <myon@debian.org>  Thu, 13 Feb 2025 15:14:15 +0100
+
+postgresql-common (271) unstable; urgency=medium
+
+  * Mark postgresql-common-dev as M-A: foreign.
+  * pg_createcluster: Disable SSL on 9.1 and earlier.
+  * pg_upgradecluster: Ignore missing postgresql-contrib-NN for 10+.
+  * PgCommon read_cluster_conf_file: Allow postgresql.auto.conf to be missing.
+
+ -- Christoph Berg <myon@debian.org>  Thu, 13 Feb 2025 15:01:44 +0100
+
+postgresql-common (270) unstable; urgency=medium
+
+  * postgresql-all.config: Handle systems without clusters.
+  * t/190_pg_buildext.t: Check for postgresql-server-dev-all.
+
+ -- Christoph Berg <myon@debian.org>  Fri, 24 Jan 2025 13:03:15 +0100
+
+postgresql-common (269) unstable; urgency=medium
+
+  [ Christoph Berg ]
+  * If the "postgresql" meta package is installed, offer automated upgrading
+    of the "main" cluster. (Closes: #810730)
+  * pg_upgradecluster: Check if all packages for the old version are installed
+    for the new version as well. (Closes: #703850)
+  * pg_upgradecluster: Enable checksums in "dump" upgrades to 18+; add
+    --(no-)data-checksums option. (Closes: #959705)
+  * pg_backupcluster: Add -Z --compress option.
+  * pg_backupcluster: Mark RUNNING backups properly.
+  * pg_ctlcluster: Fix setsid call, thanks Nam T. Nguyễn. (Closes: #1054782)
+  * pg_dropcluster: Drop only tablespace dirs matching our catalog version.
+  * README.Debian: Update upgrade instructions and fill in major versions
+    automatically. (Closes: #943788, #971536)
+  * Move contents of postgresql-server-dev-all to new package
+    postgresql-common-dev so they can be used stand-alone without pulling in
+    postgresql-common-dev-* and dependencies. postgresql-server-dev-all is now
+    a pure meta package. Also take over pg_buildext and server build files
+    from postgresql-common.
+  * postgresql-common temporarily depends on postgresql-common-dev until
+    all extension test dependencies have been updated. (Planned for the PG18
+    release preparations.)
+  * postgresql-common-dev is arch: all, convert postgresql-server-dev-all back
+    to arch: all as well since the PG build chain isn't cross-build ready yet
+    anyway.
+  * Remove postgresql-contrib meta package, provide it from postgresql.
+  * supported-versions: Remove obsolete distribution-detection code; move to
+    postgresql-common-dev; don't install
+    /etc/postgresql-common/supported_versions by default.
+  * postgresql-common.config: Remove deprecation notice for old majors.
+  * debian/maintscripts-functions: Create "main" cluster only when no other
+    clusters exist yet.
+  * pg_buildexit: Pass -j to `make` invocations. (Salsa: !23)
+  * pg_buildexit: Error out without a PGVERSION pattern in debian/control.in.
+  * PgCommon.pm set_conffile_value: Fix replacing unquoted floats and negative
+    values, thanks Allan Forsberg!
+  * PgCommon.pm read_conf_file: Add missing_ok parameter.
+  * Remove obsolete /etc/sysctl.d/30-postgresql-shm.conf. (Closes: #1042927)
+  * Move apt.postgresql.org.{asc,gpg,sh} to postgresql-client-common.
+    Drop /etc/apt/trusted.gpg.d/apt.postgresql.org.gpg compat code.
+
+  [ Christopher Bock ]
+  * pg_backupcluster: Fix backup directory in documentation.
+
+  [ Dennis Schwan ]
+  * Prevent removal of update-alternatives in RPM when updating package.
+
+  [ Michael Banck ]
+  * pg_createcluster: Do not remove existing data directory on failure.
+    (Closes: #1056303)
+
+ -- Christoph Berg <myon@debian.org>  Wed, 22 Jan 2025 20:05:11 +0100
+
+postgresql-common (267) unstable; urgency=medium
+
+  * t/027_jit.t: No jit for PG18+ on Ubuntu focal.
+
+ -- Christoph Berg <myon@debian.org>  Thu, 21 Nov 2024 11:54:02 +0100
+
+postgresql-common (266) unstable; urgency=medium
+
+  * pg_upgradecluster: Support upgrades to 18 with data checksums disabled.
+  * Fix pg_backupcluster with data checksums enabled.
+
+ -- Christoph Berg <myon@debian.org>  Thu, 14 Nov 2024 14:53:36 +0100
+
+postgresql-common (265) unstable; urgency=medium
+
+  * Add libipc-run-perl to postgresql-client-common depends for extension
+    tests.
+
+ -- Christoph Berg <myon@debian.org>  Mon, 21 Oct 2024 16:50:44 +0200
+
+postgresql-common (264) unstable; urgency=medium
+
+  * postgresql-all: Drop dependency on postgresql-contrib-*.
+  * Remove remaining traces of python2 compatibility code.
+  * debian/postgresql-common.tmpfile: Rename to .tmpfiles.
+  * t/027_jit.t: Skip JIT tests in 11.
+  * t/045_backup.t: Fix test running on 9.x without systemd.
+
+ -- Christoph Berg <myon@debian.org>  Thu, 26 Sep 2024 14:06:48 +0200
+
+postgresql-common (263) unstable; urgency=medium
+
+  [ Christoph Berg ]
+  * pg_buildext: Set PROVE_FLAGS=--verbose in installcheck.
+  * debian/supported-versions: Add 17 as default version.
+  * Most extension packages will now default to supporting only 64-bit
+    architectures. Enable the pkg.postgresql.32-bit build profile to revert
+    for local builds.
+
+  [ Andreas Karlsson ]
+  * pg_ctlcluster: Add logrotate action
+
+ -- Christoph Berg <myon@debian.org>  Tue, 10 Sep 2024 13:03:32 +0200
+
+postgresql-common (262) unstable; urgency=medium
+
+  * Chown /var/tmp/postgresql-* to postgres so catversion bump instructions do
+    not require root. Spotted by Greg Smith, thanks.
+  * Ignore test results on powerpc.
+
+ -- Christoph Berg <myon@debian.org>  Thu, 08 Aug 2024 16:37:01 +0200
+
+postgresql-common (261) unstable; urgency=medium
+
+  * server/postgresql.mk: Use --enable-dtrace only on Linux.
+  * pg_createcluster: Internally set LC_NUMERIC=C to ensure version
+    comparisons use '.' as separator.
+  * t/045_backup.t: ALTER SYSTEM needs 9.4+.
+
+ -- Christoph Berg <myon@debian.org>  Tue, 25 Jun 2024 14:04:23 +0200
+
+postgresql-common (260) unstable; urgency=medium
+
+  * t/020_create_sql_remove.t: Skip plpython3 tests on 9.x and Python 3.12+.
+
+ -- Christoph Berg <myon@debian.org>  Thu, 09 May 2024 17:10:04 +0200
+
+postgresql-common (259) unstable; urgency=medium
+
+  * pg_backupcluster, pg_restorecluster: Let `pg_restore --create` handle
+    database creation and restore of database options and grants.
+    (Removes databases.sql from dumps.)
+  * PgCommon.pm get_db_encoding: Refactor for dropped daticulocale in 17.
+  * pg_buildext: Pass PG_VIRTUALENV_ARGS to pg_virtualenv.
+
+ -- Christoph Berg <myon@debian.org>  Mon, 15 Apr 2024 14:09:12 +0200
+
+postgresql-common (258) unstable; urgency=medium
+
+  * server/postgresql.mk: Add Build-Profile pkg.postgresql.nollvm to disable
+    JIT.
+
+ -- Christoph Berg <myon@debian.org>  Mon, 18 Mar 2024 17:10:46 +0100
+
+postgresql-common (257) unstable; urgency=medium
+
+  * Move systemd unit files to /usr on releases that support it.
+  * debian/maintscripts-functions: More carefully build update-alternatives
+    command line. Hopefully fixes "link and path can't be the same" errors.
+  * debian/maintscripts-functions: Remove empty /usr/share/man/ directories.
+  * pg_backupcluster: Add hostname, machine-id, and machine-deployment (from
+    /etc/machine-info) to backup status; use machine-readable timestamps for
+    starttime/endtime; sort keys.
+  * pg_upgradecluster: Skip upgrade scripts when --no-start is given.
+  * pg_upgradecluster: Pass --jobs to analyze script. (Closes: #1054179)
+  * debian/po/sv.po: Updated Swedish translation by Martin Bagge and Anders
+    Jonsson, thanks! (Closes: #1059169)
+
+ -- Christoph Berg <myon@debian.org>  Thu, 08 Feb 2024 13:32:31 +0100
+
+postgresql-common (256) unstable; urgency=medium
+
+  * pg_upgradecluster: Remove old_snapshot_threshold in PG17.
+  * Install pg_bsd_indent and pgindent into server-dev in PG17.
+  * pg_buildext: words containing PGVERSIONS are replaced by a list of
+    words with versions filled in. Most useful in Build-Depends.
+  * pg_buildext: Add actions run and run_installed.
+  * server/postgresql.mk: Grab LLVM version from B-D instead of autodetecting.
+
+ -- Christoph Berg <myon@debian.org>  Wed, 08 Nov 2023 16:25:17 +0100
+
+postgresql-common (255) unstable; urgency=medium
+
+  * PgCommon.pm: Set defined path in prepare_exec. Thanks Niko Tyni!
+  * debian/supported-versions: Add 16 as default version.
+
+ -- Christoph Berg <myon@debian.org>  Thu, 14 Sep 2023 10:35:53 +0200
+
+postgresql-common (254) unstable; urgency=medium
+
+  * /etc/postgresql-common/pg_upgradecluster.d/analyze: Automatically analyze
+    databases after upgrade.
+  * pg_upgradecluster: drop hard-coded analyze used in dump mode only.
+  * server: Ignore test results on ia64 and sh4.
+  * pg_upgradecluster: Honor --keep-on-error not just for failing upgrade
+    scripts; properly start old cluster again after errors. On PG15+, move
+    pg_upgrade output from pg_upgrade_output.d to /var/log/postgresql/.
+    Remove force_parallel_mode in PG16+.
+  * Thanks to Dagfinn Ilmari Mannsåker for helping with the patches!
+  * Remove /usr/share/postgresql-common/upgrade-scripts, upgrade scripts for
+    postgresql-common itself. I believe this functionality was never used.
+  * pgdg/apt.postgresql.org.sh: Set umask 022.
+
+ -- Christoph Berg <myon@debian.org>  Thu, 07 Sep 2023 11:12:30 +0200
+
+postgresql-common (253) unstable; urgency=medium
+
+  * pg_upgradecluster: Remove db_user_namespace in PG17.
+  * t/045_backup.t: Relax analyze_count check that's flaky on s390x.
+  * pgdg/apt.postgresql.org.sh: Allow multiple versions in -v.
+
+ -- Christoph Berg <myon@debian.org>  Wed, 09 Aug 2023 11:51:21 +0200
+
+postgresql-common (252) unstable; urgency=medium
+
+  * pg_upgradecluster: Add --keep-on-error option.
+  * PgCommon get_db_locales: PG16 removes lc_ctype and lc_collate GUCs, query
+    pg_database instead.
+  * t/050_encodings.t: Revert back to old LC_ALL=C behavior.
+
+ -- Christoph Berg <myon@debian.org>  Sat, 01 Jul 2023 20:45:40 +0200
+
+postgresql-common (251) unstable; urgency=medium
+
+  * Refresh pgdg/apt.postgresql.org.sh.
+
+ -- Christoph Berg <myon@debian.org>  Fri, 30 Jun 2023 12:42:37 +0200
+
+postgresql-common (250) experimental; urgency=medium
+
+  * server/postgresql.mk: Fix ignoring test failures on alpha; ignore test
+    results on hppa and sparc64.
+  * pg_upgradecluster: Remove vacuum_defer_cleanup_age in PG16.
+
+ -- Christoph Berg <myon@debian.org>  Wed, 24 May 2023 10:41:06 +0200
+
+postgresql-common (249) experimental; urgency=medium
+
+  * Merge postmaster.1.gz alternatives into psql.1.gz link group.
+  * Test-Depend on postgresql-doc to test the man3 alternatives.
+  * Depend on sysvinit-utils alternatively to obsolete lsb-base.
+  * server/postgresql.mk: Allow setting MAJOR_PKG for custom server packages.
+  * server/catversion: Also extract catalog file version number.
+  * debian/maintscripts-functions: Support flavored server packages.
+  * testsuite: Support flavored server packages (testsuite -F ee).
+  * pg_upgradecluster: Copy encryption_key_command from old cluster to support
+    PostgreSQL TDE.
+  * pg_backupcluster, t/045_backup.t: Handle icu-encoded clusters and
+    databases.
+  * pg_backupcluster: Support passing --checkpoint=fast to pg_basebackup.
+  * pg_restorecluster: Pass extra pg_createcluster arguments after --.
+  * t/050_encodings.t: Accept en_US_POSIX-encoded cluster with LANG=C on PG16.
+  * pg_upgradecluster, t/052_upgrade_encodings.t: Preserve ICU locale when
+    upgrading from PG15+.
+  * debian/tests/default-psql: Mark as skippable and honor createcluster.d.
+
+ -- Christoph Berg <myon@debian.org>  Wed, 10 May 2023 21:11:56 +0200
+
 postgresql-common (248+pexip24u6) pexip; urgency=medium
 
   * Bump version
@@ -65,7 +381,7 @@ postgresql-common (246) unstable; urgency=medium
 
   * pg_buildext: If PGVERSION appears outside the package name only, fill in
     the newest supported version.
-  * pg_wrapper: Select cluster based on port number as well.
+  * pg_wrapper: Select cluster based on port number as well. (Closes: #986186)
   * t/020_create_sql_remove.t: Fix pgwrapper+psql version test on pre-9.2.
   * pgdg: Include .asc and .gpg keys from pgdg-keyring; upgrade
     apt.postgresql.org.sh to write pgdg.sources instead of pgdg.list.

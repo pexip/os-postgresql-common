@@ -33,7 +33,9 @@ B<pg_buildext updatecontrol> is run.
 Package sections that contain B<PGVERSION> in the package name are replaced by
 a list of sections, filling in the supported PostgreSQL versions.
 Package sections that contain B<PGVERSION> outside the package name have the
-newest supported PostgreSQL version filled in (useful for meta packages).
+newest supported PostgreSQL version filled in (useful for meta packages);
+words containing B<PGVERSIONS> be replaced by a list of words with the
+supported versions filled in, this is most useful in B<Build-Depends>.
 Include
 C</usr/share/postgresql-common/pgxs_debian_control.mk> in C<debian/rules> to
 run a check at build time if updating debian/control is required.
@@ -61,6 +63,9 @@ is fine to provide the tests control file directly.)
 =item B<-s>
 
 Passed to B<pg_virtualenv> when running B<installcheck>.
+
+These arguments can also be set via the B<PG_VIRTUALENV_ARGS> environment
+variable.
 
 =item B<-m> I<arg>
 
@@ -161,6 +166,13 @@ I<package-pattern> is provided, which means we are called during a build).
 Like B<installcheck>, but invokes B<psql>, or a shell, both wrapped in
 B<pg_virtualenv>. Input is read from stdin.
 
+=item B<run> [I<src-dir>] I<command>
+
+=item B<run_installed> [I<src-dir>] I<command>
+
+Runs I<command>, with B<%v> placeholder replaced on all supported versions, or
+all installed versions, respectively.
+
 =back
 
 Sometimes it is desirable to run extra code per version before invoking the
@@ -207,7 +219,8 @@ configure the list of supported versions on your system.
   Source: postgresql-foobar
   Rules-Requires-Root: no
   Build-Depends:
-   debhelper,
+   architecture-is-64-bit <!pkg.postgresql.32-bit>,
+   debhelper-compat (= 13),
    postgresql-all <!nocheck>,
    postgresql-server-dev-all (>= 217~),
 
@@ -269,6 +282,9 @@ configure the list of supported versions on your system.
   override_dh_installdocs:
 	  dh_installdocs --all README.*
 
+  override_dh_pgxs_test:
+	  +pg_buildext installcheck . build-%v postgresql-%v-foobar
+
   override_dh_auto_clean:
 	  +pg_buildext clean build-%v
 
@@ -277,13 +293,13 @@ configure the list of supported versions on your system.
 
 =item B<debian/tests/control:>
 
-  Depends: @, postgresql-server-dev-all
+  Depends: @, postgresql-common-dev
   Tests: installcheck
   Restrictions: allow-stderr
 
 =item B<debian/tests/control.in:> (optional)
 
-  Depends: @, postgresql-contrib-PGVERSION, postgresql-PGVERSION-bar
+  Depends: @, postgresql-common-dev, postgresql-PGVERSION-bar
   Tests: installcheck
   Restrictions: allow-stderr
 
@@ -332,6 +348,13 @@ B<installcheck> was switched to use it in the same version.
 
 B<dh $@ --with pgxs> and B<pgxs_loop>, the corresponding B<--buildsystem>, and
 the B<psql> and B<virtualenv> actions were introduced in postgresql-server-dev-all (>= 217~).
+
+The replacement of B<PGVERSIONS> (plural) in debian/control.in and
+B<pg_buildext run> and B<run_installed> were introduced in
+postgresql-common (>= 256~).
+
+Setting B<pg_virtualenv> arguments from B<PG_VIRTUALENV_ARGS> was introduced in
+postgresql-common (>= 259~).
 
 =head1 SEE ALSO
 

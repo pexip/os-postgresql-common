@@ -7,7 +7,7 @@ use lib 't';
 use TestLib;
 use POSIX qw/setlocale LC_ALL LC_MESSAGES/;
 
-use Test::More tests => $PgCommon::rpm ? (3 + 9*@MAJORS) : (14 + 7*@MAJORS);
+use Test::More tests => $PgCommon::rpm ? (3 + 8*@MAJORS) : (16 + 7*@MAJORS);
 
 ok (-f "/etc/os-release", "/etc/os-release exists");
 my ($os, $osversion) = os_release();
@@ -15,52 +15,59 @@ ok (defined $os, "OS is $os");
 ok (defined $osversion, "OS version is $osversion");
 
 note "PostgreSQL versions installed: @MAJORS\n";
+my $f = $ENV{'PG_FLAVOR'} // '';
 
 if ($PgCommon::rpm) {
     foreach my $v (@MAJORS) {
         my $vv = $v;
         $vv =~ s/\.//;
 
-        ok ((rpm_installed "postgresql$vv"),          "postgresql$vv installed");
-        ok ((rpm_installed "postgresql$vv-libs"),     "postgresql$vv-libs installed");
-        ok ((rpm_installed "postgresql$vv-server"),   "postgresql$vv-server installed");
-        ok ((rpm_installed "postgresql$vv-contrib"),  "postgresql$vv-contrib installed");
-        ok ((rpm_installed "postgresql$vv-plperl"),   "postgresql$vv-plperl installed");
-        SKIP: {
-            skip "No python2 support", 1 unless ($v <= 12);
-            ok ((rpm_installed "postgresql$vv-plpython"), "postgresql$vv-plpython installed");
-        }
-        ok ((rpm_installed "postgresql$vv-plpython3"), "postgresql$vv-plpython3 installed");
-        ok ((rpm_installed "postgresql$vv-pltcl"),    "postgresql$vv-pltcl installed");
-        ok ((rpm_installed "postgresql$vv-devel"),    "postgresql$vv-devel installed");
+        ok ((rpm_installed "postgresql$vv$f"),          "postgresql$vv$f installed");
+        ok ((rpm_installed "postgresql$vv$f-libs"),     "postgresql$vv$f-libs installed");
+        ok ((rpm_installed "postgresql$vv$f-server"),   "postgresql$vv$f-server installed");
+        ok ((rpm_installed "postgresql$vv$f-contrib"),  "postgresql$vv$f-contrib installed");
+        ok ((rpm_installed "postgresql$vv$f-plperl"),   "postgresql$vv$f-plperl installed");
+        ok ((rpm_installed "postgresql$vv$f-plpython3"), "postgresql$vv$f-plpython3 installed");
+        ok ((rpm_installed "postgresql$vv$f-pltcl"),    "postgresql$vv$f-pltcl installed");
+        ok ((rpm_installed "postgresql$vv$f-devel"),    "postgresql$vv$f-devel installed");
     }
     exit;
 }
 
+my $docpkgs = 0;
 foreach my $v (@MAJORS) {
-    ok ((deb_installed "postgresql-$v"), "postgresql-$v installed");
+    note $v;
+    ok ((deb_installed "postgresql-$v$f"), "postgresql-$v$f installed");
     SKIP: {
-        skip "No python2 support", 1 unless ($v <= 11 and $PgCommon::have_python2);
-        ok ((deb_installed "postgresql-plpython-$v"), "postgresql-plpython-$v installed");
+        skip "no Python 3 package for version $v", 1 if ($v < '9.1');
+        my $pyver = `python3 --version 2>/dev/null`;
+        chomp $pyver;
+        skip "$pyver is too new for PL/Python3 on $v", 1 if ($v < 10 and $pyver and $pyver =~ /3\.1[2-9]/); # distutils removed in Python 3.12
+	ok ((deb_installed "postgresql-plpython3-$v$f"), "postgresql-plpython3-$v$f installed");
     }
-    if ($v >= '9.1') {
-	ok ((deb_installed "postgresql-plpython3-$v"), "postgresql-plpython3-$v installed");
-    } else {
-	pass "no Python 3 package for version $v";
+    ok ((deb_installed "postgresql-plperl-$v$f"), "postgresql-plperl-$v$f installed");
+    ok ((deb_installed "postgresql-pltcl-$v$f"), "postgresql-pltcl-$v$f installed");
+    SKIP: {
+        skip "No postgresql-$v$f-jit package for version $v", 1 if ($v < 18);
+        ok ((deb_installed "postgresql-$v$f-jit"), "postgresql-$v$f-jit installed");
     }
-    ok ((deb_installed "postgresql-plperl-$v"), "postgresql-plperl-$v installed");
-    ok ((deb_installed "postgresql-pltcl-$v"), "postgresql-pltcl-$v installed");
-    ok ((deb_installed "postgresql-server-dev-$v"), "postgresql-server-dev-$v installed");
+    ok ((deb_installed "postgresql-server-dev-$v$f"), "postgresql-server-dev-$v$f installed");
   SKIP: {
-    skip "No postgresql-contrib-$v package for version $v", 1 if ($v >= 10);
-    ok ((deb_installed "postgresql-contrib-$v"), "postgresql-contrib-$v installed");
+    skip "No postgresql-contrib-$v$f package for version $v", 1 if ($v >= 10);
+    ok ((deb_installed "postgresql-contrib-$v$f"), "postgresql-contrib-$v$f installed");
   }
+    my $docpkg = "postgresql-doc-$v$f";
+    if (deb_installed $docpkg) {
+        note "$docpkg installed";
+        $docpkgs++;
+    }
 }
+ok $docpkgs, "At least one doc package installed";
 
 ok ((deb_installed 'libecpg-dev'), 'libecpg-dev installed');
+ok ((deb_installed 'postgresql-common-dev'), 'postgresql-common-dev installed');
 ok ((deb_installed 'procps'), 'procps installed');
 ok ((deb_installed 'netcat-openbsd'), 'netcat-openbsd installed');
-
 ok ((deb_installed 'hunspell-en-us'), 'hunspell-en-us installed');
 
 # check installed locales to fail tests early if they are missing

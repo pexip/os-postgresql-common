@@ -11,7 +11,7 @@ use lib 't';
 use TestLib;
 use PgCommon;
 
-use Test::More tests => 147 * @MAJORS;
+use Test::More tests => 141 * @MAJORS;
 
 $ENV{_SYSTEMCTL_SKIP_REDIRECT} = 1; # FIXME: testsuite is hanging otherwise
 
@@ -46,7 +46,9 @@ sub check_major {
 
     # check that the xlog/wal symlink was created
     my $first_xlog = $v >= 9.0 ? "000000010000000000000001" : "000000010000000000000000";
-    ok_dir $xlogdir, [$first_xlog, "archive_status"],
+    my @expectdir = ($first_xlog, "archive_status");
+    push @expectdir, "summaries" if ($v >= 17);
+    ok_dir $xlogdir, [@expectdir],
         "xlog/wal directory $xlogdir was created";
 
     # check pg_hba.conf auth methods
@@ -206,13 +208,12 @@ sub check_major {
     # verify that SSL is enabled (which should work for user postgres in a
     # default installation)
     my $ssl = config_bool (PgCommon::get_conf_value $v, 'main', 'postgresql.conf', 'ssl');
-    my $ssl_linked = `ldd $PgCommon::binroot$v/bin/postgres | grep libssl`;
+    my $ssl_linked = `objdump -p $PgCommon::binroot$v/bin/postgres | grep libssl`;
     my ($os, $osversion) = os_release();
     if ($PgCommon::rpm) {
         isnt $ssl_linked, '', 'Server is linked with SSL support';
         is $ssl, undef, 'SSL is disabled in postgresql.conf';
-    } elsif ($v <= 9.1 and (($os eq 'debian' and ($osversion eq 'unstable' or $osversion > 9)) or # stretch had 1.0 and 1.1
-                            ($os eq 'ubuntu' and $osversion > 18.04))) { # bionic had 1.0 and 1.1
+    } elsif ($v <= 9.1) {
         is $ssl_linked, '', 'Server is linked without SSL support (old version with only OpenSSL 1.0 support)';
         is $ssl, undef, 'SSL is disabled in postgresql.conf';
     } else {
@@ -279,30 +280,17 @@ tel|2
     is_program_out 'nobody', 'psql nobodydb -Atc "select remove_vowels(\'foobArish\')"',
 	0, "f__b_r_sh\n", 'calling PL/Perl function';
 
-    # Check PL/Python (untrusted)
-    SKIP: {
-    skip "No python2 support", 6 unless ($v <= 11 and $PgCommon::have_python2);
-    is_program_out 'postgres', create_extension($v, 'plpythonu'), 0, '', 'CREATE EXTENSION plpythonu succeeds for user postgres';
-    is_program_out 'postgres', 'psql nobodydb -qc "CREATE FUNCTION capitalize(text) RETURNS text AS \'import sys; return args[0].capitalize() + sys.version[0]\' LANGUAGE plpythonu;"',
-	0, '', 'creating PL/Python function as user postgres succeeds';
-    is_program_out 'nobody', 'psql nobodydb -Atc "select capitalize(\'foo\')"',
-	0, "Foo2\n", 'calling PL/Python function';
-    }
-
     # Check PL/Python3 (untrusted)
-    if ($v >= '9.1') {
+    SKIP: {
+        skip "Skipping PL/Python3 test for version $v...", 6 if ($v < 9.1);
+        my $pyver = `python3 --version 2>/dev/null`;
+        chomp $pyver;
+        skip "$pyver is too new for PL/Python3 on $v...", 6 if ($v < 10 and $pyver and $pyver =~ /3\.1[1-9]/); # distutils removed in Python 3.12
 	is_program_out 'postgres', create_extension($v, 'plpython3u'), 0, '', 'CREATE EXTENSION plpython3u succeeds for user postgres';
 	is_program_out 'postgres', 'psql nobodydb -qc "CREATE FUNCTION capitalize3(text) RETURNS text AS \'import sys; return args[0].capitalize() + sys.version[0]\' LANGUAGE plpython3u;"',
 	    0, '', 'creating PL/Python3 function as user postgres succeeds';
 	is_program_out 'nobody', 'psql nobodydb -Atc "select capitalize3(\'foo\')"',
 	    0, "Foo3\n", 'calling PL/Python function';
-    } else {
-	pass "Skipping PL/Python3 test for version $v...";
-	pass '...';
-	pass '...';
-	pass '...';
-	pass '...';
-	pass '...';
     }
 
     # Check PL/Tcl (trusted/untrusted)
@@ -360,8 +348,10 @@ tel|2
     close RH;
     select WH; $| = 1; # make unbuffered
 
-    my $master_pid = `ps --user postgres hu | grep 'bin/postgres.*-D' | grep -v grep | awk '{print \$2}'`;
+    open my $pidfile, "/var/lib/postgresql/$v/main/postmaster.pid";
+    my $master_pid = <$pidfile>;
     chomp $master_pid;
+    close $pidfile;
 
     my $client_pid;
     while (!$client_pid) {
