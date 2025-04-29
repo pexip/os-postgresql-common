@@ -1,3 +1,9 @@
+postgresql-common (277+pexip25u1) pexip-trixie; urgency=medium
+
+  * Initial trixie build
+
+ -- Mark Hymers <mark.hymers@pexip.com>  Tue, 29 Apr 2025 22:50:38 +0100
+
 postgresql-common (277) unstable; urgency=medium
 
   * Updated ro translation by Remus-Gabriel Chelu, thanks! (Closes: #1101817)
