@@ -32,9 +32,9 @@ CATVERSION = $(shell $(AUX_MK_DIR)/catversion)
 # configure flags
 
 CONFIGURE_FLAGS = \
-  --without-tcl \
-  --without-perl \
-  --without-python \
+  --with-tcl \
+  --with-perl \
+  --with-python \
   --with-pam \
   --with-openssl \
   --with-libxml \
