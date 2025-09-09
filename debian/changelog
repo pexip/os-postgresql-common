@@ -1,3 +1,17 @@
+postgresql-common (248+pexip24u7+deb12u1) pexip; urgency=medium
+
+  * New upstream release
+
+ -- Steve McIntyre <steve.mcintyre@pexip.com>  Tue, 09 Sep 2025 18:00:18 +0100
+
+postgresql-common (248+deb12u1) bookworm; urgency=medium
+
+  * PgCommon.pm: Set defined path in prepare_exec. Fixes compatibility with
+    trixie's perl version, and also a mild security issue. Thanks Niko Tyni!
+    (Closes: #1107154)
+
+ -- Christoph Berg <myon@debian.org>  Tue, 03 Jun 2025 15:03:54 +0200
+
 postgresql-common (248+pexip24u7) pexip; urgency=medium
 
   * Bump version
