@@ -4,7 +4,7 @@
 # versions
 #
 # (C) 2010 Dimitri Fontaine <dfontaine@hi-media.com>
-# (C) 2011-2025 Christoph Berg <myon@debian.org>
+# (C) 2011-2026 Christoph Berg <myon@debian.org>
 #
 #  This program is free software; you can redistribute it and/or modify
 #  it under the terms of the GNU General Public License as published by
@@ -91,7 +91,14 @@ substvars() {
     version="$1"
     package="$2"
 
-    depends="postgresql-$version"
+    # for major version $version, look up the minimum minor version to depend on
+    for file in debian/minor_versions /etc/postgresql-common/minor_versions; do
+        if test -f $file; then
+            minor_version=$(awk "/^$version/ { print \$2 }" $file)
+            break
+        fi
+    done
+    depends="postgresql-$version${minor_version:+ (>> $minor_version)}"
     if [ -d "debian/$package/usr/lib/postgresql/$version/lib/bitcode" ]; then
         pg_provides=$(dpkg-query --show --showformat='${Provides}' postgresql-$version | grep -o 'postgresql-[0-9]*-jit-llvm (= [0-9.]*')
         llvm_version=${pg_provides#*= }

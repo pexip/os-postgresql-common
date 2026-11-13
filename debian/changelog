@@ -1,3 +1,12 @@
+postgresql-common (278+deb13u1) trixie; urgency=medium
+
+  * pg_buildext, /etc/postgresql-common/minor_versions: Set minimum server
+    versions to depend on when extensions are built. Start with the current
+    minor versions just being released. This makes sure packages built with
+    the fix for CVE-2026-6460 depend on a server with that fix.
+
+ -- Christoph Berg <myon@debian.org>  Fri, 13 Nov 2026 17:09:50 +0100
+
 postgresql-common (278) unstable; urgency=medium
 
   * pg_upgradecluster: Do two vacuumdb runs in analyze hook for PG18+.

@@ -51,6 +51,14 @@ program_ok 'nobody', 'cd foo-123 && DEB_BUILD_OPTIONS=nocheck dpkg-buildpackage 
 foreach my $ver (@versions) {
     my $deb = "postgresql-$ver-foo_123-1_$arch.deb";
     ok (-f $deb, "$deb was built");
+    my $info = `dpkg-deb --info $deb control`;
+    like $info, qr/^Depends: postgresql-$ver/m, "correct postgresql dependency";
+    like $info, qr/^Depends: postgresql-$ver \(>> $ver/m, "correct versioned postgresql dependency" if ($ver >= 14);
+    my $dbgsym = "postgresql-$ver-foo-dbgsym_123-1_$arch.deb"; # Debian
+    my $ddbgsym = "postgresql-$ver-foo-dbgsym_123-1_$arch.ddeb"; # Ubuntu
+    ok (-f $dbgsym or -f $ddbgsym, "$dbgsym was built");
+
+    # test in-tree installcheck
     SKIP: {
         my $have_extension_destdir = `grep extension_destdir /usr/share/postgresql/$ver/postgresql.conf.sample`;
         skip "No in-tree installcheck on PG $ver (missing extension_destdir)", 2 unless ($have_extension_destdir);
