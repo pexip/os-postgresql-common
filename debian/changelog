@@ -1,3 +1,18 @@
+postgresql-common (278+pexip25u2+deb13u1) pexip-trixie; urgency=medium
+
+  * New upstream release with security fix
+
+ -- Steve McIntyre <steve.mcintyre@pexip.com>  Mon, 23 Nov 2026 12:20:34 +0000
+
+postgresql-common (278+deb13u1) trixie; urgency=medium
+
+  * pg_buildext, /etc/postgresql-common/minor_versions: Set minimum server
+    versions to depend on when extensions are built. Start with the current
+    minor versions just being released. This makes sure packages built with
+    the fix for CVE-2026-6460 depend on a server with that fix.
+
+ -- Christoph Berg <myon@debian.org>  Fri, 13 Nov 2026 17:09:50 +0100
+
 postgresql-common (278+pexip25u3) pexip-trixie; urgency=medium
 
   * Rebuild to move postgresql-common-dev to basket
